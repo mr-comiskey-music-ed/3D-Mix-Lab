@@ -1,0 +1,6 @@
+{
+  "name": "Visual Mix Lab",
+  "description": "Interactive 3D audio mixing sandbox, diagnostic challenges, and spatial arrangement educator with DAW timeline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
