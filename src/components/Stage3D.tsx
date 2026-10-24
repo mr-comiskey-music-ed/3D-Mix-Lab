@@ -16,6 +16,7 @@ import {
   screenToWorldDelta,
   worldOf,
 } from '../stage/roomMath';
+import { sphereImage } from '../stage/sphereShade';
 
 interface Stage3DProps {
   bubbles: SoundBubble[];
@@ -163,6 +164,133 @@ interface Drawn {
   scale: number;
 }
 
+
+/**
+ * One sound on the stage (shadow, glow, particles, shaded sphere, effects, gridlines).
+ * Memoized: while you drag one sound, the others aren't redrawn — their `d` objects are
+ * reused from the stage's cache, so React skips them.
+ */
+const SoundView = React.memo(function SoundView({
+  d,
+  dimmed,
+  theme,
+  uid,
+  grain,
+  viewMode,
+}: {
+  d: Drawn;
+  dimmed: boolean;
+  theme: ThemeMode;
+  uid: string;
+  grain: string;
+  viewMode: ViewMode;
+}) {
+  const T = THEMES[theme === 'light' ? 'light' : 'dark'];
+    const { b } = d;
+    const R = b.reverb / 100;
+    const C = b.compression / 100;
+    const S = b.saturation / 100;
+    const rim = mix(b.color, theme === 'light' ? '#000000' : '#ffffff', theme === 'light' ? 0.25 : 0.55);
+    const light = mix(b.color, '#ffffff', 0.3);
+    const fuzz = S > 0.25 ? (S - 0.25) * Math.min(d.rx, d.ry) * 0.09 : 0;
+    const path = bodyPath(d.cx, d.cy, d.rx, d.ry, fuzz);
+    const rot = `rotate(${d.rot.toFixed(2)} ${d.cx.toFixed(1)} ${d.cy.toFixed(1)})`;
+    const seed = hashId(b.id);
+    const particles = !dimmed && R > 0.05 ? Math.round(R * 40) : 0;
+    return (
+      <g key={b.id} opacity={dimmed ? 0.18 : d.fade} pointerEvents="none">
+        {/* Light effects add light in dark mode (screen); the ball itself is drawn normally
+            so its shadow side can actually be dark. */}
+        <g style={{ mixBlendMode: T.blend }}>
+        {d.floor && (
+          <>
+            <line x1={d.cx} y1={d.cy + d.bh} x2={d.floor.x} y2={d.floor.y} stroke={light} strokeOpacity={0.25} strokeDasharray="2 4" />
+            <ellipse
+              cx={d.floor.x}
+              cy={d.floor.y}
+              rx={d.floor.rx}
+              ry={Math.max(2, d.floor.ry)}
+              transform={`rotate(${d.floor.rot.toFixed(2)} ${d.floor.x.toFixed(1)} ${d.floor.y.toFixed(1)})`}
+              fill={`url(#${uid}-shadow-${b.id})`}
+            />
+          </>
+        )}
+        {/* Reverb: a glow plus a cloud of particles drifting back into the room */}
+        <ellipse
+          cx={d.cx}
+          cy={d.cy}
+          rx={d.rx * (1.35 + R * 0.55)}
+          ry={d.ry * (1.35 + R * 0.55)}
+          transform={rot}
+          fill={`url(#${uid}-bloom-${b.id})`}
+        />
+        {Array.from({ length: particles }).map((_, i) => {
+          const a = seeded(seed * 31 + i) * Math.PI * 2;
+          const dist = 1.1 + Math.pow(seeded(seed * 17 + i), 1.4) * (0.6 + R * 1.6);
+          const back = seeded(seed * 7 + i) * R;
+          const px = d.cx + Math.cos(a) * d.bw * dist + d.drift.x * back;
+          const py = d.cy + Math.sin(a) * d.bh * dist * 0.9 + d.drift.y * back;
+          return (
+            <circle
+              key={i}
+              cx={px.toFixed(1)}
+              cy={py.toFixed(1)}
+              r={((0.8 + seeded(i * 3 + seed) * 2.2) * d.scale).toFixed(2)}
+              fill={seeded(i + seed * 5) > 0.4 ? light : theme === 'light' ? b.color : '#ffffff'}
+              opacity={Math.max(0.1, 0.85 - (dist - 1) * 0.35)}
+            />
+          );
+        })}
+        </g>
+        {/* Body: a shaded sphere (see sphereShade.ts), stretched to this sound's outline */}
+        {(() => {
+          const href = sphereImage({ color: b.color, light: d.light.view, theme: theme === 'light' ? 'light' : 'dark', density: C });
+          return href ? (
+            <g transform={`translate(${d.cx.toFixed(1)} ${d.cy.toFixed(1)}) rotate(${d.rot.toFixed(2)}) scale(${d.rx.toFixed(2)} ${d.ry.toFixed(2)})`}>
+              <image href={href} x={-1} y={-1} width={2} height={2} preserveAspectRatio="none" />
+            </g>
+          ) : (
+            <path d={path} fill={`url(#${uid}-body-${b.id})`} transform={rot} />
+          );
+        })()}
+        {/* Saturation: grain inside + a warm, fuzzy edge */}
+        {S > 0.08 && grain && (
+          <rect
+            x={d.cx - d.bw - 4}
+            y={d.cy - d.bh - 4}
+            width={d.bw * 2 + 8}
+            height={d.bh * 2 + 8}
+            fill={`url(#${uid}-grain)`}
+            clipPath={`url(#${uid}-clip-${b.id})`}
+            opacity={0.06 + S * 0.22}
+          />
+        )}
+        {S > 0.3 && (
+          <>
+            <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.22} strokeWidth={4 + S * 7} />
+            <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.45} strokeWidth={1.5 + S * 2} />
+          </>
+        )}
+        {/* Gridlines on the sphere show which way it's turned */}
+        {d.light.rings.map((r, i) => (
+          <React.Fragment key={i}>
+            {r.back && <path d={r.back} fill="none" stroke={rim} strokeWidth={0.8} opacity={viewMode === 'front' ? 0.08 : 0.14} />}
+            {r.front && <path d={r.front} fill="none" stroke={rim} strokeWidth={1} opacity={viewMode === 'front' ? 0.22 : 0.4} />}
+          </React.Fragment>
+        ))}
+        {/* Compression: a firmer, brighter shell */}
+        <path
+          d={path}
+          transform={rot}
+          fill="none"
+          stroke={rim}
+          strokeWidth={(0.6 + C * 1.5) * Math.max(0.7, d.scale)}
+          strokeOpacity={theme === 'light' ? 0.2 + C * 0.45 : 0.12 + C * 0.4}
+        />
+      </g>
+    );
+});
+
 const Stage3DInner: React.FC<Stage3DProps> = ({
   bubbles,
   selectedId,
@@ -209,11 +337,24 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
   const grid = useMemo(() => roomGrid(cam, viewMode, HR), [cam, viewMode, HR]);
 
   // ---------- Sounds as the camera sees them ----------
+  // Results are cached per sound object, so a drag only recomputes the sound being moved.
+  const drawnCache = useRef<{ cam: Camera | null; viewMode: ViewMode | null; map: WeakMap<SoundBubble, Drawn> }>({
+    cam: null,
+    viewMode: null,
+    map: new WeakMap(),
+  });
   const drawn: Drawn[] = useMemo(() => {
+    const cache = drawnCache.current;
+    if (cache.cam !== cam || cache.viewMode !== viewMode) {
+      cache.cam = cam;
+      cache.viewMode = viewMode;
+      cache.map = new WeakMap();
+    }
     const sFront = cam.project([0, HR / 2, 0]).s;
-    const sBack = cam.project([0, HR / 2, DR]).s;
     return bubbles
       .map((b) => {
+        const hit = cache.map.get(b);
+        if (hit) return hit;
         const C = worldOf(b, HR);
         const axes = axesOf(b);
         const p = cam.project(C);
@@ -221,8 +362,10 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
         const fl = cam.project([C[0], 0, C[2]]);
         const sh = outline(cam, [C[0], 0, C[2]], [[axes[0] * 0.9, 0, 0], [0, 0, axes[2] * 0.9]]);
         const bk = cam.project([C[0], C[1], C[2] + 0.8]);
-        const t = Math.max(0, Math.min(1, (p.s - sBack) / (sFront - sBack || 1)));
-        return {
+        // Fade by depth in the mix (front = full, back wall = dimmer), not by distance from the
+        // camera — otherwise low sounds looked 'far away' in the bird's-eye view.
+        const t = Math.max(0, Math.min(1, 1 - C[2] / DR));
+        const result: Drawn = {
           b,
           C,
           axes,
@@ -240,6 +383,8 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
           light: lighting(cam, C, axes, body, true),
           scale: Math.min(1.1, p.s / sFront + 0.15),
         };
+        cache.map.set(b, result);
+        return result;
       })
       .sort((a, b) => b.depthZ - a.depthZ); // far first, near last (on top)
   }, [bubbles, cam, HR, viewMode]);
@@ -619,108 +764,9 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
         {snapLine && <line {...snapLine} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="4 3" pointerEvents="none" />}
 
         {/* Sounds, far to near */}
-        {drawn.map((d) => {
-          const { b } = d;
-          const dimmed = isDimmed(b);
-          const R = b.reverb / 100;
-          const C = b.compression / 100;
-          const S = b.saturation / 100;
-          const rim = mix(b.color, theme === 'light' ? '#000000' : '#ffffff', theme === 'light' ? 0.25 : 0.55);
-          const light = mix(b.color, '#ffffff', 0.3);
-          const fuzz = S > 0.25 ? (S - 0.25) * Math.min(d.rx, d.ry) * 0.09 : 0;
-          const path = bodyPath(d.cx, d.cy, d.rx, d.ry, fuzz);
-          const rot = `rotate(${d.rot.toFixed(2)} ${d.cx.toFixed(1)} ${d.cy.toFixed(1)})`;
-          const seed = hashId(b.id);
-          const particles = !dimmed && R > 0.05 ? Math.round(R * 40) : 0;
-          return (
-            <g key={b.id} opacity={dimmed ? 0.18 : d.fade} style={{ mixBlendMode: T.blend }} pointerEvents="none">
-              {d.floor && (
-                <>
-                  <line x1={d.cx} y1={d.cy + d.bh} x2={d.floor.x} y2={d.floor.y} stroke={light} strokeOpacity={0.25} strokeDasharray="2 4" />
-                  <ellipse
-                    cx={d.floor.x}
-                    cy={d.floor.y}
-                    rx={d.floor.rx}
-                    ry={Math.max(2, d.floor.ry)}
-                    transform={`rotate(${d.floor.rot.toFixed(2)} ${d.floor.x.toFixed(1)} ${d.floor.y.toFixed(1)})`}
-                    fill={`url(#${uid}-shadow-${b.id})`}
-                  />
-                </>
-              )}
-              {/* Reverb: a glow plus a cloud of particles drifting back into the room */}
-              <ellipse
-                cx={d.cx}
-                cy={d.cy}
-                rx={d.rx * (1.35 + R * 0.55)}
-                ry={d.ry * (1.35 + R * 0.55)}
-                transform={rot}
-                fill={`url(#${uid}-bloom-${b.id})`}
-              />
-              {Array.from({ length: particles }).map((_, i) => {
-                const a = seeded(seed * 31 + i) * Math.PI * 2;
-                const dist = 1.1 + Math.pow(seeded(seed * 17 + i), 1.4) * (0.6 + R * 1.6);
-                const back = seeded(seed * 7 + i) * R;
-                const px = d.cx + Math.cos(a) * d.bw * dist + d.drift.x * back;
-                const py = d.cy + Math.sin(a) * d.bh * dist * 0.9 + d.drift.y * back;
-                return (
-                  <circle
-                    key={i}
-                    cx={px.toFixed(1)}
-                    cy={py.toFixed(1)}
-                    r={((0.8 + seeded(i * 3 + seed) * 2.2) * d.scale).toFixed(2)}
-                    fill={seeded(i + seed * 5) > 0.4 ? light : theme === 'light' ? b.color : '#ffffff'}
-                    opacity={Math.max(0.1, 0.85 - (dist - 1) * 0.35)}
-                  />
-                );
-              })}
-              {/* Body */}
-              <path d={path} fill={`url(#${uid}-body-${b.id})`} transform={rot} />
-              {/* Saturation: grain inside + a warm, fuzzy edge */}
-              {S > 0.08 && grain && (
-                <rect
-                  x={d.cx - d.bw - 4}
-                  y={d.cy - d.bh - 4}
-                  width={d.bw * 2 + 8}
-                  height={d.bh * 2 + 8}
-                  fill={`url(#${uid}-grain)`}
-                  clipPath={`url(#${uid}-clip-${b.id})`}
-                  opacity={0.06 + S * 0.22}
-                />
-              )}
-              {S > 0.3 && (
-                <>
-                  <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.22} strokeWidth={4 + S * 7} />
-                  <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.45} strokeWidth={1.5 + S * 2} />
-                </>
-              )}
-              {/* Specular glint where the light hits */}
-              <ellipse
-                cx={d.light.glint.x}
-                cy={d.light.glint.y}
-                rx={Math.min(d.rx, d.ry) * 0.3}
-                ry={Math.min(d.rx, d.ry) * 0.17}
-                fill={`url(#${uid}-glint)`}
-                opacity={0.55}
-              />
-              {/* Gridlines on the sphere show which way it's turned */}
-              {d.light.rings.map((r, i) => (
-                <React.Fragment key={i}>
-                  {r.back && <path d={r.back} fill="none" stroke={rim} strokeWidth={0.8} opacity={viewMode === 'front' ? 0.08 : 0.14} />}
-                  {r.front && <path d={r.front} fill="none" stroke={rim} strokeWidth={1} opacity={viewMode === 'front' ? 0.22 : 0.4} />}
-                </React.Fragment>
-              ))}
-              {/* Compression: a firmer, brighter shell */}
-              <path
-                d={path}
-                transform={rot}
-                fill="none"
-                stroke={rim}
-                strokeWidth={(0.8 + C * 2.2) * Math.max(0.7, d.scale)}
-                strokeOpacity={0.35 + C * 0.6}
-              />
-            </g>
-          );
-        })}
+        {drawn.map((d) => (
+          <SoundView key={d.b.id} d={d} dimmed={isDimmed(d.b)} theme={theme} uid={uid} grain={grain} viewMode={viewMode} />
+        ))}
 
         {/* Selection outlines */}
         {drawn

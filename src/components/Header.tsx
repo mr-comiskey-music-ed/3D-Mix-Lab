@@ -7,7 +7,6 @@ import {
   Moon,
   GraduationCap,
   Layers,
-  Code2,
   Volume2,
   Eye,
   Sliders,
@@ -29,7 +28,6 @@ interface HeaderProps {
   onUndo: () => void;
   onRedo: () => void;
   onOpenTour: () => void;
-  onOpenExport: () => void;
   /** Overall challenge progress, 0–100 (checks passed out of all checks). */
   challengePercent: number;
 }
@@ -46,7 +44,6 @@ const HeaderInner: React.FC<HeaderProps> = ({
   onUndo,
   onRedo,
   onOpenTour,
-  onOpenExport,
   challengePercent,
 }) => {
   return (
@@ -269,21 +266,6 @@ const HeaderInner: React.FC<HeaderProps> = ({
           <span className="hidden 2xl:inline font-mono text-[11px] whitespace-nowrap">
             {theme === 'dark' ? 'Light Mode' : 'Dark Studio'}
           </span>
-        </button>
-
-        {/* Standalone GAS HTML Export */}
-        <button
-          id="btn-export-standalone"
-          onClick={onOpenExport}
-          title="Export Standalone single index.html for Google Apps Script iframe"
-          className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1.5 ${
-            theme === 'light'
-              ? 'border-slate-300 bg-slate-100 text-indigo-700 hover:bg-slate-200'
-              : 'border-slate-800 bg-slate-900 text-indigo-300 hover:bg-slate-800'
-          }`}
-        >
-          <Code2 className="w-3.5 h-3.5" />
-          <span className="hidden 2xl:inline whitespace-nowrap">GAS HTML</span>
         </button>
 
         {/* 🎓 Quick Tour */}

@@ -196,9 +196,11 @@ export function outline(cam: Camera, c: Vec3, axes: Vec3[]): Outline {
   return { rx, ry, rot: (th * 180) / Math.PI, bw, bh };
 }
 
-// Light comes from the listener: front, above, slightly left. It stays put in the room,
-// so the lit side of each sphere turns with the camera and the shapes read as solid.
-const LIGHT = norm([-0.45, 0.8, -1]);
+// One light, fixed in the room: above, in front, and to the right. It stays put while the
+// camera moves, so in the Front view the balls are lit from the upper right, and in the 3D
+// (corner) view you see their shadow side turn toward you — that's what makes them read as round.
+// (It's deliberately NOT behind the camera: light from where you stand makes balls look flat.)
+const LIGHT = norm([0.6, 0.85, -0.55]);
 
 export interface Lighting {
   /** Brightest point of the body gradient, as 0–1 fractions of the (unrotated) outline box. */
@@ -206,6 +208,8 @@ export interface Lighting {
   fy: number;
   glint: { x: number; y: number };
   rings: { front: string; back: string }[];
+  /** The light as seen from the camera, in the outline's own frame (x right, y down, z toward you). */
+  view: Vec3;
 }
 
 export function lighting(cam: Camera, C: Vec3, [a, b, c]: Vec3, body: Outline, withRings: boolean): Lighting {
@@ -250,8 +254,21 @@ export function lighting(cam: Camera, C: Vec3, [a, b, c]: Vec3, body: Outline, w
         ring((t) => [C[0], C[1] + b * Math.cos(t), C[2] + c * Math.sin(t)], (t) => [0, Math.cos(t) / b, Math.sin(t) / c]),
       ]
     : [];
+  // Light direction on screen: where a small step toward the light lands, plus how much it
+  // points at the camera. Then turned into the outline's rotated frame for the sphere shader.
+  const e = 1e-3;
+  const pl = cam.project([C[0] + LIGHT[0] * e, C[1] + LIGHT[1] * e, C[2] + LIGHT[2] * e]);
+  const sx = (pl.x - p0.x) / (e * p0.s);
+  const sy = (pl.y - p0.y) / (e * p0.s);
+  const sz = dot(LIGHT, toCam);
+  const vlen = Math.hypot(sx, sy, sz) || 1;
+  const view: Vec3 = [
+    (sx * Math.cos(r) + sy * Math.sin(r)) / vlen,
+    (-sx * Math.sin(r) + sy * Math.cos(r)) / vlen,
+    sz / vlen,
+  ];
   const clampF = (v: number) => Math.max(0.12, Math.min(0.88, v));
-  return { fx: clampF(0.5 + lx * 0.5), fy: clampF(0.5 + ly * 0.5), glint: { x: sp.x, y: sp.y }, rings };
+  return { fx: clampF(0.5 + lx * 0.5), fy: clampF(0.5 + ly * 0.5), glint: { x: sp.x, y: sp.y }, rings, view };
 }
 
 /**

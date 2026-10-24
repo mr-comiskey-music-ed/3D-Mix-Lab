@@ -26,7 +26,6 @@ import { ChallengesView } from './components/ChallengesView';
 import { ExamplesView } from './components/ExamplesView';
 import { GradeReportView } from './components/GradeReportView';
 import { QuickTourModal } from './components/QuickTourModal';
-import { StandaloneExportModal } from './components/StandaloneExportModal';
 import { ConfirmDeleteModal, ConfirmDeleteState } from './components/ConfirmDeleteModal';
 import { YouTubeEmbed } from './components/YouTubeEmbed';
 import { audioEngine, AudioSourceInfo } from './utils/audioEngine';
@@ -62,7 +61,6 @@ export default function App() {
 
   // Modals
   const [isTourOpen, setIsTourOpen] = useState(false);
-  const [isExportOpen, setIsExportOpen] = useState(false);
 
   // Panels Open/Close
   const [isPaletteOpen, setIsPaletteOpen] = useState(true);
@@ -817,7 +815,6 @@ export default function App() {
           setIsTimelineOpen(true);
           setIsTourOpen(true);
         }}
-        onOpenExport={() => setIsExportOpen(true)}
         challengePercent={challengePercent}
       />
 
@@ -1048,13 +1045,6 @@ export default function App() {
       <QuickTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-      />
-
-      {/* Standalone Google Apps Script HTML Modal */}
-      <StandaloneExportModal
-        isOpen={isExportOpen}
-        onClose={() => setIsExportOpen(false)}
-        theme={theme}
       />
 
       {/* Confirmation Modal for Instrument & Arrangement Region Deletion */}
