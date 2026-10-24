@@ -44,6 +44,14 @@ export const Timeline: React.FC<TimelineProps> = ({
   theme = 'dark',
 }) => {
   const rulerRef = useRef<HTMLDivElement>(null);
+  // Track names and lanes are separate columns; keep their scroll positions locked together.
+  const namesRef = useRef<HTMLDivElement>(null);
+  const lanesRef = useRef<HTMLDivElement>(null);
+  const syncScroll = (from: React.RefObject<HTMLDivElement>, to: React.RefObject<HTMLDivElement>) => {
+    if (from.current && to.current && to.current.scrollTop !== from.current.scrollTop) {
+      to.current.scrollTop = from.current.scrollTop;
+    }
+  };
   const [dragRegion, setDragRegion] = useState<{
     bubbleId: string;
     regionId: string;
@@ -275,7 +283,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       {/* Main Track Workspace */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Track Names Column */}
-        <div className={`w-44 border-r shrink-0 overflow-y-auto flex flex-col ${
+        <div className={`w-44 border-r shrink-0 overflow-hidden flex flex-col ${
           theme === 'light' ? 'border-slate-200 bg-slate-50' : 'border-slate-800/80 bg-slate-950/80'
         }`}>
           {/* Header spacer */}
@@ -285,6 +293,12 @@ export const Timeline: React.FC<TimelineProps> = ({
             <span>Track Name</span>
             <span>Add</span>
           </div>
+          {/* Names scroll together with the lanes (see syncScroll) so every row lines up */}
+          <div
+            ref={namesRef}
+            onScroll={() => syncScroll(namesRef, lanesRef)}
+            className="flex-1 overflow-y-auto no-scrollbar"
+          >
           {bubbles.map((bubble) => (
             <div
               key={bubble.id}
@@ -317,6 +331,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               </button>
             </div>
           ))}
+          </div>
         </div>
 
         {/* Right Timeline Canvas (Ruler + Tracks Lanes) */}
@@ -342,7 +357,11 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
 
           {/* Tracks Lanes Container */}
-          <div className="flex-1 overflow-y-auto relative">
+          <div
+            ref={lanesRef}
+            onScroll={() => syncScroll(lanesRef, namesRef)}
+            className="flex-1 overflow-y-auto relative"
+          >
             {/* Live Playhead Line */}
             <div
               className="absolute top-0 bottom-0 w-0.5 bg-rose-500 z-30 pointer-events-none shadow-[0_0_8px_rgba(244,63,94,0.8)]"

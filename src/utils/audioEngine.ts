@@ -36,12 +36,15 @@ class VisualMixAudioEngine {
   private sourceName: string | null = null;
   private youtubeId: string | null = null;
 
-  // Local audio element
+  // Local audio element (and the temporary URL for an uploaded file, freed on unload)
   private audioEl: HTMLAudioElement | null = null;
+  private objectUrl: string | null = null;
 
   // YouTube player instance from window.YT
   private ytPlayer: any = null;
   private ytPollingIntervalId: number | null = null;
+  // Play was pressed before the YouTube player finished loading; start as soon as it's ready.
+  private ytPlayWhenReady = false;
 
   constructor() {
     // Clean audio engine without procedural synthesizer
@@ -101,6 +104,12 @@ class VisualMixAudioEngine {
       if (title && (!this.sourceName || this.sourceName.startsWith('YouTube:'))) {
         this.sourceName = `YouTube: ${title}`;
       }
+      if (this.currentTime > 0) player.seekTo?.(this.currentTime, true);
+      if (this.ytPlayWhenReady) {
+        this.ytPlayWhenReady = false;
+        player.playVideo?.();
+        this.startYouTubePolling();
+      }
     } catch {
       // Ignore if not yet available
     }
@@ -140,8 +149,14 @@ class VisualMixAudioEngine {
       try {
         const curr = this.ytPlayer.getCurrentTime?.();
         const dur = this.ytPlayer.getDuration?.();
+        const state = this.ytPlayer.getPlayerState?.();
         if (typeof curr === 'number' && !isNaN(curr)) {
           this.currentTime = curr;
+        }
+        // Trust the video: playing (1) or buffering (3) counts as playing; anything else doesn't.
+        if (typeof state === 'number') {
+          this.isPlaying = state === 1 || state === 3;
+          if (state === 2 || state === 0) this.stopYouTubePolling();
         }
         if (typeof dur === 'number' && !isNaN(dur) && dur > 0 && Math.abs(dur - this.songDuration) > 1) {
           this.songDuration = Math.round(dur);
@@ -162,13 +177,21 @@ class VisualMixAudioEngine {
   public play() {
     if (this.isPlaying) return;
 
-    if (this.sourceType === 'youtube' && this.ytPlayer) {
+    if (this.sourceType === 'youtube') {
+      if (!this.ytPlayer) {
+        // Video still loading: never fall back to the silent clock (that's what made the
+        // playhead run while the video sat still). Start once the player is ready.
+        this.ytPlayWhenReady = true;
+        this.notify();
+        return;
+      }
       try {
         this.ytPlayer.playVideo();
       } catch (err) {
         console.warn('Could not play YouTube video:', err);
       }
-      this.isPlaying = true;
+      // "Playing" is set by the video itself (state change / polling), so if the browser
+      // blocks playback the playhead doesn't run on its own.
       this.startYouTubePolling();
       this.notify();
       return;
@@ -202,6 +225,7 @@ class VisualMixAudioEngine {
 
   public pause() {
     this.isPlaying = false;
+    this.ytPlayWhenReady = false;
 
     if (this.intervalId !== null) {
       clearInterval(this.intervalId);
@@ -224,7 +248,7 @@ class VisualMixAudioEngine {
   }
 
   public togglePlay() {
-    if (this.isPlaying) {
+    if (this.isPlaying || this.ytPlayWhenReady) {
       this.pause();
     } else {
       this.play();
@@ -297,6 +321,7 @@ class VisualMixAudioEngine {
     this.unloadCurrentMedia();
 
     const url = URL.createObjectURL(file);
+    this.objectUrl = url;
     const audio = new Audio(url);
     this.audioEl = audio;
     this.sourceType = 'audio';
@@ -362,6 +387,11 @@ class VisualMixAudioEngine {
       this.audioEl.src = '';
       this.audioEl = null;
     }
+    if (this.objectUrl) {
+      URL.revokeObjectURL(this.objectUrl);
+      this.objectUrl = null;
+    }
+    this.ytPlayWhenReady = false;
 
     this.stopYouTubePolling();
     this.stopLocalAudioPolling();

@@ -13,6 +13,8 @@ export interface CommitOptions {
    * false/omitted for one-off actions (add, delete, duplicate, hotkey, load preset).
    */
   coalesce?: boolean;
+  /** false = change the mix without adding an undo step (automatic adjustments). */
+  record?: boolean;
 }
 
 /**
@@ -73,6 +75,12 @@ export function useMixHistory(initial: SoundBubble[]) {
     (next: SoundBubble[], options: CommitOptions = {}) => {
       if (next === presentRef.current) return;
       const coalesce = !!options.coalesce;
+
+      if (options.record === false) {
+        presentRef.current = next;
+        setBubbles(next);
+        return;
+      }
 
       if (!coalesce || !streakOpenRef.current) {
         pastRef.current = [...pastRef.current.slice(-(MAX_HISTORY - 1)), presentRef.current];

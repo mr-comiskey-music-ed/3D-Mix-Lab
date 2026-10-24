@@ -12,6 +12,8 @@ import { useMixHistory, CommitOptions } from './hooks/useMixHistory';
 import { loadJSON, saveJSON } from './utils/storage';
 import { RosterParseResult } from './utils/serialization';
 import { ReviewBar } from './components/ReviewBar';
+import { DiagramSongView } from './components/DiagramSongView';
+import { SongResult } from './utils/songMatch';
 import { overallPercent } from './utils/progress';
 import { INITIAL_SANDBOX_BUBBLES, getDiagramName } from './data/presets';
 import { Header } from './components/Header';
@@ -33,6 +35,9 @@ import { audioEngine, AudioSourceInfo } from './utils/audioEngine';
 const SANDBOX_KEY = 'sandbox:v1';
 // v2 = checks passed per challenge (v1 stored stars and is no longer read)
 const SCORES_KEY = 'scores:v2';
+const EXPLAIN_KEY = 'explanations:v1';
+const SONG_RESULTS_KEY = 'songResults:v1';
+const SONG_PEEKS_KEY = 'songPeeks:v1';
 
 /** Make sure a saved/imported mix is usable: an array of bubbles with pan in range. */
 function sanitizeBubbles(value: unknown, fallback: SoundBubble[]): SoundBubble[] {
@@ -127,6 +132,32 @@ export default function App() {
     saveJSON(SCORES_KEY, challengeScores);
   }, [challengeScores]);
 
+  // "Explain your fix" answers per challenge (go into the submission code)
+  const [explanations, setExplanations] = useState<Record<string, string>>(() => loadJSON(EXPLAIN_KEY, {}));
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(EXPLAIN_KEY, explanations), 400);
+    return () => clearTimeout(t);
+  }, [explanations]);
+
+  // "Diagram a Song": first-reveal results, and songs whose answer was opened in Examples first
+  const [songResults, setSongResults] = useState<Record<string, SongResult>>(() => loadJSON(SONG_RESULTS_KEY, {}));
+  const [songPeeks, setSongPeeks] = useState<Record<string, boolean>>(() => loadJSON(SONG_PEEKS_KEY, {}));
+  useEffect(() => saveJSON(SONG_RESULTS_KEY, songResults), [songResults]);
+  useEffect(() => saveJSON(SONG_PEEKS_KEY, songPeeks), [songPeeks]);
+  const handleSongReveal = useCallback(
+    (songId: string, match: number, placements: SongResult['placements']) => {
+      setSongResults((prev) =>
+        prev[songId]
+          ? prev // the first reveal is the score
+          : { ...prev, [songId]: { match, placements, revealedAt: Date.now(), sawAnswerFirst: !!songPeeks[songId] } }
+      );
+    },
+    [songPeeks]
+  );
+  const handleViewAnswer = useCallback((songId: string) => {
+    setSongPeeks((prev) => (prev[songId] ? prev : { ...prev, [songId]: true }));
+  }, []);
+
   // Depth Hotkey HUD Toast
   const [hotkeyToast, setHotkeyToast] = useState<{
     key: string;
@@ -149,6 +180,30 @@ export default function App() {
   const handleRedo = useCallback(() => {
     if (!review) history.redo();
   }, [review, history.redo]);
+
+  // When a song with a different length loads, regions that ran to the end of the old song
+  // keep running to the end of the new one (and nothing sticks out past the end).
+  // This is automatic, so it doesn't add an undo step.
+  const prevDurationRef = useRef(songDuration);
+  useEffect(() => {
+    const prev = prevDurationRef.current;
+    prevDurationRef.current = songDuration;
+    if (!songDuration || Math.abs(prev - songDuration) < 0.5) return;
+    history.update((list) => {
+      let changed = false;
+      const next = list.map((b) => {
+        const regions = (b.regions || []).map((r) => {
+          const end = r.end >= prev - 0.5 || r.end > songDuration ? songDuration : r.end;
+          if (end === r.end) return r;
+          changed = true;
+          return { ...r, end: Math.max(end, Math.min(r.start + 1, songDuration)) };
+        });
+        return regions.some((r, i) => r !== b.regions[i]) ? { ...b, regions } : b;
+      });
+      return changed ? next : list;
+    }, { record: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songDuration]);
 
   // Sync with audio engine
   useEffect(() => {
@@ -877,6 +932,8 @@ export default function App() {
                 [id]: Math.max(prev[id] || 0, passed),
               }))
             }
+            explanations={explanations}
+            onExplanationChange={(id, text) => setExplanations((prev) => ({ ...prev, [id]: text }))}
           />
         )}
 
@@ -886,6 +943,21 @@ export default function App() {
             viewMode={viewMode}
             theme={theme}
             currentTime={currentTime}
+            onViewAnswer={(id) => {
+              // Only matters if the student hasn't diagrammed this song yet
+              if (!songResults[id]) handleViewAnswer(id);
+            }}
+          />
+        )}
+
+        {/* Tab 4: Diagram a Song (ear training against the example diagrams) */}
+        {activeTab === 'songs' && (
+          <DiagramSongView
+            viewMode={viewMode}
+            theme={theme}
+            currentTime={currentTime}
+            results={songResults}
+            onReveal={handleSongReveal}
           />
         )}
 
@@ -900,6 +972,8 @@ export default function App() {
             rosterInput={rosterInput}
             onRosterInputChange={setRosterInput}
             onReviewStudents={startReview}
+            explanations={explanations}
+            songResults={songResults}
           />
         )}
       </main>

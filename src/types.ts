@@ -3,7 +3,7 @@ export type ViewMode = 'front' | 'top' | '3d';
 /** Pan positions run from -PAN_LIMIT (hard left) to +PAN_LIMIT (hard right). */
 export const PAN_LIMIT = 64;
 export const clampPan = (x: number) => Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, Math.round(x)));
-export type ActiveTab = 'sandbox' | 'challenges' | 'examples' | 'grader';
+export type ActiveTab = 'sandbox' | 'challenges' | 'examples' | 'songs' | 'grader';
 export type ThemeMode = 'dark' | 'light';
 
 export interface TimelineRegion {
@@ -94,6 +94,10 @@ export interface StudentSubmission {
     songDuration: number;
   };
   signature: string;
+  /** "Explain your fix" text for each challenge, by challenge id. */
+  explanations?: Record<string, string>;
+  /** "Diagram a Song" results, by example song id. */
+  songResults?: Record<string, import('./utils/songMatch').SongResult>;
 }
 
 export interface RosterStudentRow {

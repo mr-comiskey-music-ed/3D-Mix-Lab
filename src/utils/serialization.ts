@@ -1,5 +1,7 @@
 import { SoundBubble, StudentSubmission, RosterStudentRow, TimelineRegion } from '../types';
 import { MIXING_CHALLENGES } from '../data/challenges';
+import { SongResult } from './songMatch';
+import { EXAMPLE_TRACKS } from '../data/examples';
 import { TOTAL_CHECKS, checksIn, challengePercent } from './progress';
 
 /**
@@ -109,13 +111,19 @@ function unpackBubble(row: PackedBubble, i: number, duration: number): SoundBubb
 }
 
 // ---------- encode ----------
+export interface SubmissionExtras {
+  explanations?: Record<string, string>;
+  songResults?: Record<string, SongResult>;
+}
+
 export async function encodeStudentSubmission(
   studentName: string,
   challengeScores: Record<string, number>,
   bubbles: SoundBubble[],
-  songDuration: number
+  songDuration: number,
+  extras: SubmissionExtras = {}
 ): Promise<string> {
-  const packed = {
+  const packed: Record<string, unknown> = {
     v: 2,
     n: studentName.trim() || 'Anonymous Student',
     t: Date.now(),
@@ -123,6 +131,19 @@ export async function encodeStudentSubmission(
     d: Math.round(songDuration),
     b: bubbles.map((b) => packBubble(b, songDuration)),
   };
+  // "Explain your fix" answers, in challenge order (left out when all are empty)
+  const explanations = CHALLENGE_IDS.map((id) => (extras.explanations?.[id] || '').trim());
+  if (explanations.some(Boolean)) packed.e = explanations;
+  // "Diagram a Song": [match %, saw answer first (1/0), revealed at, placements]
+  const songs = Object.entries(extras.songResults || {});
+  if (songs.length) {
+    packed.g = Object.fromEntries(
+      songs.map(([id, r]) => [
+        id,
+        [r.match, r.sawAnswerFirst ? 1 : 0, r.revealedAt, r.placements.map(([pid, x, y, v]) => [pid, round1(x), round1(y), round1(v)])],
+      ])
+    );
+  }
   const json = JSON.stringify(packed);
   return `${PREFIX_V2}${bytesToBase64Url(await compress(json))}.${hash(json)}`;
 }
@@ -176,11 +197,21 @@ async function decodeV2(code: string): Promise<DecodeResult> {
     const scores: Record<string, number> = {};
     CHALLENGE_IDS.forEach((id, i) => (scores[id] = Math.max(0, Math.min(checksIn(id), Number(p.s?.[i]) || 0))));
     const bubbles = (p.b || []).map((row: PackedBubble, i: number) => unpackBubble(row, i, duration));
-    return {
-      success: true,
-      isValidSignature: true,
-      submission: buildSubmission(p.n, new Date(p.t).toISOString(), scores, bubbles, duration, body.slice(dot + 1), '2'),
-    };
+    const submission = buildSubmission(p.n, new Date(p.t).toISOString(), scores, bubbles, duration, body.slice(dot + 1), '2');
+    if (Array.isArray(p.e)) {
+      submission.explanations = {};
+      CHALLENGE_IDS.forEach((id, i) => {
+        if (p.e[i]) submission.explanations![id] = String(p.e[i]);
+      });
+    }
+    if (p.g && typeof p.g === 'object') {
+      submission.songResults = {};
+      for (const [id, row] of Object.entries(p.g as Record<string, any[]>)) {
+        const [match, saw, revealedAt, placements] = row;
+        submission.songResults[id] = { match: Number(match) || 0, sawAnswerFirst: saw === 1, revealedAt: Number(revealedAt) || 0, placements: placements || [] };
+      }
+    }
+    return { success: true, isValidSignature: true, submission };
   } catch (err) {
     return { success: false, error: `Couldn't read this code: ${(err as Error).message}` };
   }
@@ -343,7 +374,10 @@ export function generateRosterCSV(rows: RosterStudentRow[]): string {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const challengeHeaders = MIXING_CHALLENGES.map((c) => `${c.title.split(':')[0].replace('Challenge ', 'Ch. ')} %`);
-  const headers = ['Student Name', ...challengeHeaders, 'Checks Passed', 'Total Checks', 'Overall %', 'Status', 'Submitted', 'Tracks in Mix'];
+  const songTitle = (t: { title: string }) => t.title.split(' (')[0];
+  const songHeaders = EXAMPLE_TRACKS.map((t) => `Song: ${songTitle(t)} match %`);
+  const explainHeaders = MIXING_CHALLENGES.map((c) => `${c.title.split(':')[0].replace('Challenge ', 'Ch. ')} explanation`);
+  const headers = ['Student Name', ...challengeHeaders, 'Checks Passed', 'Total Checks', 'Overall %', 'Status', 'Submitted', 'Tracks in Mix', ...songHeaders, 'Saw answer before trying', ...explainHeaders];
   const lines = rows.map((r) =>
     [
       r.studentName,
@@ -356,6 +390,9 @@ export function generateRosterCSV(rows: RosterStudentRow[]): string {
       r.status,
       new Date(r.timestamp).toLocaleString(),
       r.submission.sandboxSnapshot?.bubbles?.length ?? 0,
+      ...EXAMPLE_TRACKS.map((t) => r.submission.songResults?.[t.id]?.match ?? ''),
+      EXAMPLE_TRACKS.filter((t) => r.submission.songResults?.[t.id]?.sawAnswerFirst).map(songTitle).join('; '),
+      ...CHALLENGE_IDS.map((id) => r.submission.explanations?.[id] ?? ''),
     ]
       .map(esc)
       .join(',')

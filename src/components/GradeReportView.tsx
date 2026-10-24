@@ -8,6 +8,7 @@ import {
   RosterParseResult,
   MAX_STARS,
 } from '../utils/serialization';
+import { SongResult } from '../utils/songMatch';
 import { checksPassed, overallPercent, letterFor, TOTAL_CHECKS } from '../utils/progress';
 import {
   GraduationCap,
@@ -37,7 +38,16 @@ interface GradeReportViewProps {
   onRosterInputChange: (text: string) => void;
   /** Open these students' mixes in the Sandbox one at a time, starting at `index`. */
   onReviewStudents: (rows: RosterStudentRow[], index: number) => void;
+  /** Student's "Explain your fix" answers and "Diagram a Song" results, included in the code. */
+  explanations: Record<string, string>;
+  songResults: Record<string, SongResult>;
 }
+
+/** Average first-try match across the songs a student diagrammed (null if none). */
+export const songAverage = (results?: Record<string, SongResult>) => {
+  const list = Object.values(results || {});
+  return list.length ? Math.round(list.reduce((s, r) => s + r.match, 0) / list.length) : null;
+};
 
 export const GradeReportView: React.FC<GradeReportViewProps> = ({
   challengeScores,
@@ -48,6 +58,8 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
   rosterInput: batchInput,
   onRosterInputChange: setBatchInput,
   onReviewStudents,
+  explanations,
+  songResults,
 }) => {
   const [studentName, setStudentName] = useState('');
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
@@ -83,7 +95,8 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
       studentName.trim(),
       challengeScores,
       sandboxBubbles,
-      songDuration
+      songDuration,
+      { explanations, songResults }
     );
     setGeneratedCode(code);
     setHasCopied(false);
@@ -219,6 +232,17 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
                   <div className="flex justify-between text-slate-400">
                     <span>Arrangement Timeline:</span>
                     <span className="text-emerald-400 font-bold">Included</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Explanations written:</span>
+                    <span className="text-sky-300 font-bold">{Object.values(explanations).filter((t) => t.trim()).length}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Songs diagrammed:</span>
+                    <span className="text-sky-300 font-bold">
+                      {Object.keys(songResults).length}
+                      {songAverage(songResults) !== null ? ` (avg ${songAverage(songResults)}% match)` : ''}
+                    </span>
                   </div>
                 </div>
 
@@ -437,6 +461,7 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
                     <th className="p-3">Checks Passed</th>
                     <th className="p-3">Grade %</th>
                     <th className="p-3">Status</th>
+                    <th className="p-3" title="Average first-try match on Diagram a Song">Songs</th>
                     <th className="p-3">Submitted At</th>
                     <th className="p-3 text-right">Mix Diagram</th>
                   </tr>
@@ -468,6 +493,18 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
                         >
                           {row.status}
                         </span>
+                      </td>
+                      <td className="p-3 font-mono text-slate-300">
+                        {songAverage(row.submission.songResults) !== null ? (
+                          <span title={`${Object.keys(row.submission.songResults || {}).length} song(s) diagrammed`}>
+                            {songAverage(row.submission.songResults)}%
+                            {Object.values(row.submission.songResults || {}).some((r) => r.sawAnswerFirst) && (
+                              <span className="ml-1 text-amber-300" title="Opened at least one answer diagram before trying">*</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">–</span>
+                        )}
                       </td>
                       <td className="p-3 text-slate-400 text-[11px] font-mono">
                         {new Date(row.timestamp).toLocaleDateString()} {new Date(row.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

@@ -36,6 +36,13 @@ interface Stage3DProps {
   readOnly?: boolean;
   onToggleSolo?: (id: string) => void;
   onToggleMute?: (id: string) => void;
+  /**
+   * Answer overlay ("Diagram a Song"): where each sound sits in the reference mix.
+   * Drawn as dashed outlines, with a line from the matching sound (same id) to its spot.
+   */
+  ghostBubbles?: SoundBubble[];
+  /** Show the frequency-guidance "!" badges (off for ear-training). */
+  showGuidance?: boolean;
 }
 
 // ---------- Look ----------
@@ -128,8 +135,14 @@ function getGrainUrl() {
   return grainUrl;
 }
 
+// A single region from 0:00 to the default song length (3:30) means "plays the whole song",
+// so it stays on even when the loaded song is longer than 3:30.
+const DEFAULT_SONG_LENGTH = 210;
 const isActiveAt = (b: SoundBubble, t: number) =>
-  !b.regions || b.regions.length === 0 || b.regions.some((r) => t >= r.start && t <= r.end);
+  !b.regions ||
+  b.regions.length === 0 ||
+  (b.regions.length === 1 && b.regions[0].start <= 0 && b.regions[0].end >= DEFAULT_SONG_LENGTH - 0.5) ||
+  b.regions.some((r) => t >= r.start && t <= r.end);
 
 interface Drawn {
   b: SoundBubble;
@@ -167,6 +180,8 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
   readOnly = false,
   onToggleSolo,
   onToggleMute,
+  ghostBubbles,
+  showGuidance = true,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -228,6 +243,19 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
       })
       .sort((a, b) => b.depthZ - a.depthZ); // far first, near last (on top)
   }, [bubbles, cam, HR, viewMode]);
+
+  // Answer overlay positions (same projection as the sounds themselves)
+  const ghosts = useMemo(
+    () =>
+      (ghostBubbles || []).map((b) => {
+        const C = worldOf(b, HR);
+        const axes = axesOf(b);
+        const p = cam.project(C);
+        const body = outline(cam, C, [[axes[0], 0, 0], [0, axes[1], 0], [0, 0, axes[2]]]);
+        return { b, cx: p.x, cy: p.y, rx: body.rx, ry: body.ry, rot: body.rot };
+      }),
+    [ghostBubbles, cam, HR]
+  );
 
   const anySolo = bubbles.some((b) => b.solo);
   const isDimmed = (b: SoundBubble) => !isActiveAt(b, currentTime) || !!b.mute || (anySolo && !b.solo);
@@ -733,6 +761,44 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
           />
         ))}
 
+        {/* Answer overlay: dashed outline where each sound sits in the song, linked to the student's sound */}
+        {ghosts.length > 0 && (
+          <g pointerEvents="none">
+            {ghosts.map((g) => {
+              const mine = drawn.find((d) => d.b.id === g.b.id);
+              return (
+                <g key={`ghost-${g.b.id}`}>
+                  {mine && (
+                    <line
+                      x1={mine.cx}
+                      y1={mine.cy}
+                      x2={g.cx}
+                      y2={g.cy}
+                      stroke={g.b.color}
+                      strokeWidth={1.6}
+                      strokeDasharray="3 4"
+                      opacity={0.9}
+                    />
+                  )}
+                  <ellipse
+                    cx={g.cx}
+                    cy={g.cy}
+                    rx={Math.max(8, g.rx)}
+                    ry={Math.max(8, g.ry)}
+                    transform={`rotate(${g.rot} ${g.cx} ${g.cy})`}
+                    fill={g.b.color}
+                    fillOpacity={0.1}
+                    stroke={g.b.color}
+                    strokeWidth={2}
+                    strokeDasharray="7 5"
+                  />
+                  <circle cx={g.cx} cy={g.cy} r={3.5} fill={g.b.color} />
+                </g>
+              );
+            })}
+          </g>
+        )}
+
         {/* Names */}
         <g pointerEvents="none">
           {drawn.map((d) => (
@@ -758,7 +824,7 @@ const Stage3DInner: React.FC<Stage3DProps> = ({
         {/* Badges: frequency guidance, notes, solo / mute */}
         {drawn.map((d) => {
           const { b } = d;
-          const guidance = getFrequencyAssessment(b);
+          const guidance = showGuidance ? getFrequencyAssessment(b) : null;
           const showSM =
             !!(onToggleSolo || onToggleMute) && (hoverId === b.id || currentSelectedIds.includes(b.id) || !!b.solo || !!b.mute);
           const spot = labelSpots[b.id];

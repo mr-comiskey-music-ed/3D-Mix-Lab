@@ -32,6 +32,9 @@ interface ChallengesViewProps {
   challengeScores: Record<string, number>;
   /** Records how many checks passed (the best result is kept). */
   onUpdateScore: (challengeId: string, checksPassed: number) => void;
+  /** "Explain your fix" answers by challenge id (saved in the browser and sent in the code). */
+  explanations: Record<string, string>;
+  onExplanationChange: (challengeId: string, text: string) => void;
 }
 
 export const ChallengesView: React.FC<ChallengesViewProps> = ({
@@ -40,6 +43,8 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   currentTime,
   challengeScores,
   onUpdateScore,
+  explanations,
+  onExplanationChange,
 }) => {
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
   const currentChallenge = MIXING_CHALLENGES[activeChallengeIdx];
@@ -405,7 +410,7 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
           </div>
 
           {/* 3D Stage */}
-          <div className="flex-1 w-full h-full pt-20">
+          <div className="flex-1 min-h-0 w-full pt-20">
             <Stage3D
               bubbles={displayedBubbles}
               selectedId={selectedBubbleId}
@@ -417,6 +422,22 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
               theme={theme}
               currentTime={currentTime}
               readOnly={isABComparing}
+            />
+          </div>
+
+          {/* Explain your fix: reasoning, not just a score. Included in the submission code. */}
+          <div className="shrink-0 border-t border-slate-800 bg-slate-950/90 px-3 py-2">
+            <label className="flex items-baseline justify-between text-xs mb-1">
+              <span className="font-semibold text-slate-200">Explain your fix</span>
+              <span className="text-slate-500">What did you hear, what did you change, and why?</span>
+            </label>
+            <textarea
+              value={explanations[currentChallenge.id] || ''}
+              onChange={(e) => onExplanationChange(currentChallenge.id, e.target.value.slice(0, 600))}
+              rows={2}
+              maxLength={600}
+              placeholder="e.g. The guitars and synth were piled on the kick and 808 in the low-mids, so it sounded muddy. I moved them up and panned the guitars wide so the bass has its own space."
+              className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 resize-none"
             />
           </div>
         </div>

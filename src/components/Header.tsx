@@ -12,6 +12,7 @@ import {
   Eye,
   Sliders,
   Box,
+  Headphones,
 } from 'lucide-react';
 import { ViewMode, ActiveTab, ThemeMode } from '../types';
 import { StudioMonitorsIcon, PaperAirplaneIcon } from '../utils/instrumentIcons';
@@ -64,12 +65,12 @@ const HeaderInner: React.FC<HeaderProps> = ({
         </div>
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
-            <span className={`font-bold text-sm sm:text-base tracking-tight flex items-center gap-1.5 ${
+            <span className={`font-bold text-sm sm:text-base tracking-tight flex items-center gap-1.5 whitespace-nowrap ${
               theme === 'light' ? 'text-slate-900' : 'text-white'
             }`}>
               Visual Mix Lab
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-mono font-medium tracking-wide uppercase bg-indigo-500/20 text-indigo-500 border border-indigo-500/30">
+            <span className="hidden 2xl:inline text-[10px] px-1.5 py-0.5 rounded-full font-mono font-medium tracking-wide uppercase bg-indigo-500/20 text-indigo-500 border border-indigo-500/30">
               3D Audio
             </span>
           </div>
@@ -83,7 +84,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
         <button
           id="tab-sandbox"
           onClick={() => setActiveTab('sandbox')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'sandbox'
               ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
               : theme === 'light'
@@ -98,7 +99,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
         <button
           id="tab-challenges"
           onClick={() => setActiveTab('challenges')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 relative ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap relative ${
             activeTab === 'challenges'
               ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
               : theme === 'light'
@@ -118,7 +119,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
         <button
           id="tab-examples"
           onClick={() => setActiveTab('examples')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'examples'
               ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
               : theme === 'light'
@@ -131,9 +132,25 @@ const HeaderInner: React.FC<HeaderProps> = ({
         </button>
 
         <button
+          id="tab-songs"
+          onClick={() => setActiveTab('songs')}
+          title="Listen to a song and diagram it yourself, then compare with the answer"
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+            activeTab === 'songs'
+              ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
+              : theme === 'light'
+              ? 'text-slate-700 hover:text-slate-900 hover:bg-slate-300/60'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <Headphones className="w-3.5 h-3.5" />
+          <span>Diagram a Song</span>
+        </button>
+
+        <button
           id="tab-grader"
           onClick={() => setActiveTab('grader')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 whitespace-nowrap ${
             activeTab === 'grader'
               ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
               : theme === 'light'
@@ -181,7 +198,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
             }`}
           >
             <PaperAirplaneIcon className="w-3.5 h-3.5 shrink-0" />
-            <span>Bird's-Eye</span>
+            <span className="whitespace-nowrap">Bird's-Eye</span>
           </button>
 
           <button
@@ -249,7 +266,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
           }`}
         >
           {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-          <span className="hidden xl:inline font-mono text-[11px]">
+          <span className="hidden 2xl:inline font-mono text-[11px] whitespace-nowrap">
             {theme === 'dark' ? 'Light Mode' : 'Dark Studio'}
           </span>
         </button>
@@ -266,7 +283,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
           }`}
         >
           <Code2 className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">GAS HTML</span>
+          <span className="hidden 2xl:inline whitespace-nowrap">GAS HTML</span>
         </button>
 
         {/* 🎓 Quick Tour */}
@@ -277,7 +294,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
           className="px-2.5 py-1.5 rounded-lg bg-indigo-600/90 hover:bg-indigo-600 text-white text-xs font-semibold transition-all flex items-center gap-1 shadow-sm shadow-indigo-600/30 ring-1 ring-indigo-400/30"
         >
           <GraduationCap className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Tour</span>
+          <span className="hidden xl:inline">Tour</span>
         </button>
       </div>
     </header>

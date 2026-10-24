@@ -32,6 +32,8 @@ interface InspectorProps {
   isOpen: boolean;
   onToggleOpen: () => void;
   theme?: ThemeMode;
+  /** Show frequency warnings and target ranges (off for ear-training, where they'd give answers away). */
+  showGuidance?: boolean;
 }
 
 const PRESET_COLORS = [
@@ -58,6 +60,7 @@ const InspectorInner: React.FC<InspectorProps> = ({
   isOpen,
   onToggleOpen,
   theme = 'dark',
+  showGuidance = true,
 }) => {
   // Hooks must run on every render, so this lives above the early returns below.
   const batchStartRef = React.useRef<{ prop: string; startSliderVal: number; startMap: Map<string, number> } | null>(null);
@@ -592,7 +595,7 @@ const InspectorInner: React.FC<InspectorProps> = ({
       <div className="p-4 space-y-5 text-xs">
         {/* Automatic Assessment Guidance Notice (Slide 1) */}
         {(() => {
-          const freqWarning = getFrequencyAssessment(selectedBubble);
+          const freqWarning = showGuidance ? getFrequencyAssessment(selectedBubble) : null;
           if (!freqWarning) return null;
           return (
             <div className={`p-3 rounded-lg border flex items-start gap-2.5 ${
@@ -693,7 +696,7 @@ const InspectorInner: React.FC<InspectorProps> = ({
               <span>100% High/Air</span>
             </div>
             {(() => {
-              const target = getInstrumentTargetRange(selectedBubble);
+              const target = showGuidance ? getInstrumentTargetRange(selectedBubble) : null;
               if (!target) return null;
               const isWithin = selectedBubble.y >= target.min && selectedBubble.y <= target.max;
               return (

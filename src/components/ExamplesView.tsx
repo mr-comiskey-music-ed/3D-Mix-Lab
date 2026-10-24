@@ -35,12 +35,15 @@ interface ExamplesViewProps {
   viewMode: ViewMode;
   theme: ThemeMode;
   currentTime: number;
+  /** Called when a song's diagram is shown (it's the answer key for "Diagram a Song"). */
+  onViewAnswer?: (songId: string) => void;
 }
 
 export const ExamplesView: React.FC<ExamplesViewProps> = ({
   viewMode,
   theme,
   currentTime,
+  onViewAnswer,
 }) => {
   // Master list of tracks (editable in memory)
   const [tracks, setTracks] = useState<ExampleTrack[]>(() =>
@@ -69,6 +72,12 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
 
   const activeTrack = tracks[activeTrackIdx] || tracks[0];
   const bubbles = activeTrack.bubbles;
+
+  // Let the app know this song's answer diagram has been seen
+  useEffect(() => {
+    if (activeTrack?.id) onViewAnswer?.(activeTrack.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTrack?.id]);
 
   // Track audio engine state
   useEffect(() => {

@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+/* Scrollable areas that shouldn't show their own scrollbar (e.g. timeline track names,
+   which scroll together with the lanes beside them). */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
