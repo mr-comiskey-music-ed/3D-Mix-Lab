@@ -1,4 +1,5 @@
 import React from 'react';
+import { memoIgnoringCallbacks } from '../utils/memo';
 import {
   Undo2,
   Redo2,
@@ -9,7 +10,8 @@ import {
   Code2,
   Volume2,
   Eye,
-  Sliders
+  Sliders,
+  Box,
 } from 'lucide-react';
 import { ViewMode, ActiveTab, ThemeMode } from '../types';
 import { StudioMonitorsIcon, PaperAirplaneIcon } from '../utils/instrumentIcons';
@@ -27,10 +29,11 @@ interface HeaderProps {
   onRedo: () => void;
   onOpenTour: () => void;
   onOpenExport: () => void;
-  totalChallengeStars: number;
+  /** Overall challenge progress, 0–100 (checks passed out of all checks). */
+  challengePercent: number;
 }
 
-export const Header: React.FC<HeaderProps> = ({
+const HeaderInner: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   viewMode,
@@ -43,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
   onRedo,
   onOpenTour,
   onOpenExport,
-  totalChallengeStars,
+  challengePercent,
 }) => {
   return (
     <header
@@ -104,8 +107,11 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <span>Challenges</span>
-          <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-amber-500/20 text-amber-700 border border-amber-500/30">
-            ⭐ {totalChallengeStars}/15
+          <span
+            title="Checks passed across all challenges"
+            className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-emerald-500/15 text-emerald-600 border border-emerald-500/30"
+          >
+            {challengePercent}%
           </span>
         </button>
 
@@ -149,7 +155,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="view-front"
             onClick={() => setViewMode('front')}
-            title="Front View - Pan (X) vs Frequency (Y). Direct drag & resize enabled."
+            title="Front View - the room from the front: pan (left/right) and frequency (low/high). Drag and resize here."
             className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
               viewMode === 'front'
                 ? 'bg-indigo-600 text-white shadow-sm'
@@ -165,7 +171,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="view-top"
             onClick={() => setViewMode('top')}
-            title="Bird's-Eye View - Pan (X) vs Depth in room (Z)"
+            title="Bird's-Eye View - the room from above: pan (left/right) and depth (front/back). Drag to change depth."
             className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
               viewMode === 'top'
                 ? 'bg-indigo-600 text-white shadow-sm'
@@ -176,6 +182,22 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <PaperAirplaneIcon className="w-3.5 h-3.5 shrink-0" />
             <span>Bird's-Eye</span>
+          </button>
+
+          <button
+            id="view-3d"
+            onClick={() => setViewMode('3d')}
+            title="3D View - the whole room from an angle, to see depth. Look only: move sounds in Front or Bird's-Eye."
+            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
+              viewMode === '3d'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : theme === 'light'
+                ? 'text-slate-700 hover:text-slate-900'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Box className="w-3.5 h-3.5 shrink-0" />
+            <span>3D</span>
           </button>
         </div>
 
@@ -261,3 +283,6 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+
+// Redraw only when this panel's data changes (not on every play-clock tick).
+export const Header = memoIgnoringCallbacks(HeaderInner);

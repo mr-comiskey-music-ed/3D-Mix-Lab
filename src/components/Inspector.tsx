@@ -1,4 +1,5 @@
 import React from 'react';
+import { memoIgnoringCallbacks } from '../utils/memo';
 import { SoundBubble, ThemeMode } from '../types';
 import { getInstrumentIconComponent } from '../utils/instrumentIcons';
 import {
@@ -15,6 +16,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { getFrequencyAssessment, getInstrumentTargetRange } from '../utils/frequencyAssessment';
+import { bandOfY, formatHz, hzOfY } from '../stage/roomMath';
 
 interface InspectorProps {
   selectedBubble: SoundBubble | null;
@@ -43,7 +45,7 @@ const PRESET_COLORS = [
   '#64748b', // Slate
 ];
 
-export const Inspector: React.FC<InspectorProps> = ({
+const InspectorInner: React.FC<InspectorProps> = ({
   selectedBubble,
   selectedBubbles = [],
   onUpdateBubble,
@@ -57,6 +59,9 @@ export const Inspector: React.FC<InspectorProps> = ({
   onToggleOpen,
   theme = 'dark',
 }) => {
+  // Hooks must run on every render, so this lives above the early returns below.
+  const batchStartRef = React.useRef<{ prop: string; startSliderVal: number; startMap: Map<string, number> } | null>(null);
+
   if (!isOpen) {
     return (
       <button
@@ -101,7 +106,6 @@ export const Inspector: React.FC<InspectorProps> = ({
       }
     };
 
-    const batchStartRef = React.useRef<{ prop: string; startSliderVal: number; startMap: Map<string, number> } | null>(null);
 
     const handleBatchSliderStart = (prop: string, currentSliderVal: number) => {
       batchStartRef.current = {
@@ -339,7 +343,7 @@ export const Inspector: React.FC<InspectorProps> = ({
               <div className="flex justify-between text-[11px]">
                 <span className={theme === 'light' ? 'text-slate-700' : 'text-slate-300'}>Average Depth Z / Volume</span>
                 <span className="font-mono text-sky-500">
-                  {avgZ => avgFreq}%
+                  {Math.round(selectedBubbles.reduce((s, b) => s + b.z, 0) / count)}%
                 </span>
               </div>
               <input
@@ -668,9 +672,9 @@ export const Inspector: React.FC<InspectorProps> = ({
           {/* Frequency Y */}
           <div className="space-y-1.5">
             <div className="flex justify-between text-[11px]">
-              <span className={theme === 'light' ? 'text-slate-700' : 'text-slate-300'}>Y: Frequency Resonance</span>
+              <span className={theme === 'light' ? 'text-slate-700' : 'text-slate-300'}>Y: Frequency</span>
               <span className="font-mono text-emerald-500 font-semibold">
-                {selectedBubble.y <= 30 ? 'Low/Sub-Bass' : selectedBubble.y <= 60 ? 'Midrange' : selectedBubble.y <= 75 ? 'Hi-Mid' : 'High/Air'} ({selectedBubble.y}%)
+                {bandOfY(selectedBubble.y).name} · ≈{formatHz(hzOfY(selectedBubble.y))}
               </span>
             </div>
             <input
@@ -882,3 +886,6 @@ export const Inspector: React.FC<InspectorProps> = ({
     </div>
   );
 };
+
+// Redraw only when this panel's data changes (not on every play-clock tick).
+export const Inspector = memoIgnoringCallbacks(InspectorInner);

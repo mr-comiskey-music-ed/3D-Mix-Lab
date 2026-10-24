@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Challenge, SoundBubble, ViewMode, ThemeMode } from '../types';
 import { MIXING_CHALLENGES } from '../data/challenges';
+import { loadJSON, saveJSON, isAuthoringMode } from '../utils/storage';
+import { challengePercent } from '../utils/progress';
+
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+const WORK_KEY = 'challengeWork:v1';
 import { Stage3D } from './Stage3D';
 import { Inspector } from './Inspector';
 import {
   CheckCircle2,
   AlertTriangle,
-  Star,
   RefreshCw,
   Eye,
   Sliders,
@@ -26,7 +30,8 @@ interface ChallengesViewProps {
   theme: ThemeMode;
   currentTime: number;
   challengeScores: Record<string, number>;
-  onUpdateScore: (challengeId: string, stars: number) => void;
+  /** Records how many checks passed (the best result is kept). */
+  onUpdateScore: (challengeId: string, checksPassed: number) => void;
 }
 
 export const ChallengesView: React.FC<ChallengesViewProps> = ({
@@ -39,24 +44,29 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   const [activeChallengeIdx, setActiveChallengeIdx] = useState(0);
   const currentChallenge = MIXING_CHALLENGES[activeChallengeIdx];
 
-  // Working state of bubbles for the current challenge
-  const [challengeBubbles, setChallengeBubbles] = useState<SoundBubble[]>(() =>
-    JSON.parse(JSON.stringify(currentChallenge.initialBubbles))
-  );
-
+  // Work in progress for every challenge, kept in this browser so switching challenges,
+  // switching tabs or reloading the page never throws away a student's changes.
+  const [workById, setWorkById] = useState<Record<string, SoundBubble[]>>(() => loadJSON(WORK_KEY, {}));
+  const challengeBubbles: SoundBubble[] = workById[currentChallenge.id] ?? currentChallenge.initialBubbles;
+  const setChallengeBubbles = (next: SoundBubble[] | ((prev: SoundBubble[]) => SoundBubble[])) => {
+    setWorkById((prev) => {
+      const current = prev[currentChallenge.id] ?? currentChallenge.initialBubbles;
+      const value = typeof next === 'function' ? next(current) : next;
+      return { ...prev, [currentChallenge.id]: value };
+    });
+  };
   useEffect(() => {
-    setChallengeBubbles(JSON.parse(JSON.stringify(currentChallenge.initialBubbles)));
-    setSelectedBubbleId(null);
-    setIsABComparing(false);
-    setEvaluationResult(null);
-  }, [activeChallengeIdx]);
+    const t = setTimeout(() => saveJSON(WORK_KEY, workById), 400);
+    return () => clearTimeout(t);
+  }, [workById]);
 
   const [selectedBubbleId, setSelectedBubbleId] = useState<string | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
   const [isABComparing, setIsABComparing] = useState(false); // false = student mix; true = flawed initial mix
   const [evaluationResult, setEvaluationResult] = useState<{
     tested: boolean;
-    stars: number;
+    passed: number;
+    total: number;
     details: { description: string; passed: boolean; hint: string }[];
   } | null>(null);
 
@@ -68,8 +78,6 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   // Switch challenge
   const handleSelectChallenge = (idx: number) => {
     setActiveChallengeIdx(idx);
-    const newChallenge = MIXING_CHALLENGES[idx];
-    setChallengeBubbles(JSON.parse(JSON.stringify(newChallenge.initialBubbles)));
     setSelectedBubbleId(null);
     setIsABComparing(false);
     setEvaluationResult(null);
@@ -77,50 +85,34 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   };
 
   const handleResetChallenge = () => {
-    setChallengeBubbles(JSON.parse(JSON.stringify(currentChallenge.initialBubbles)));
+    setChallengeBubbles(clone(currentChallenge.initialBubbles));
     setSelectedBubbleId(null);
     setIsABComparing(false);
     setEvaluationResult(null);
     setHasUnsavedChanges(false);
   };
 
-  const generateChallengesTypeScriptContent = () => {
-    const updatedChallenges = MIXING_CHALLENGES.map((ch, idx) => {
-      if (idx === activeChallengeIdx) {
-        return {
-          ...ch,
-          initialBubbles: challengeBubbles,
-        };
-      }
-      return ch;
+  // Teacher authoring: all challenge starting diagrams, with the current one replaced by
+  // what's on screen. Written to src/data/challengeDiagrams.json (diagrams only — the
+  // pass/fail checks in challenges.ts are never rewritten).
+  const buildDiagramsJson = () => {
+    const diagrams: Record<string, SoundBubble[]> = {};
+    MIXING_CHALLENGES.forEach((ch) => {
+      diagrams[ch.id] = ch.id === currentChallenge.id ? challengeBubbles : ch.initialBubbles;
     });
-
-    return `import { Challenge } from '../types';\n\nexport const MIXING_CHALLENGES: Challenge[] = ${JSON.stringify(
-      updatedChallenges,
-      null,
-      2
-    )};\n`;
+    return diagrams;
   };
+  const generateDiagramsFileContent = () => JSON.stringify(buildDiagramsJson(), null, 2) + '\n';
 
   const handleSaveToChallengesFile = async () => {
     setSaveStatus('saving');
-    setStatusMessage('Saving challenge diagram to src/data/challenges.ts...');
+    setStatusMessage('Saving challenge diagram to src/data/challengeDiagrams.json...');
 
     try {
-      const updatedChallenges = MIXING_CHALLENGES.map((ch, idx) => {
-        if (idx === activeChallengeIdx) {
-          return {
-            ...ch,
-            initialBubbles: challengeBubbles,
-          };
-        }
-        return ch;
-      });
-
-      const response = await fetch('/api/save-challenges', {
+      const response = await fetch('/api/save-challenge-diagrams', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challenges: updatedChallenges }),
+        body: JSON.stringify({ diagrams: buildDiagramsJson() }),
       });
 
       if (!response.ok) {
@@ -129,23 +121,23 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
 
       setSaveStatus('saved');
       setHasUnsavedChanges(false);
-      setStatusMessage('Saved challenge diagram to src/data/challenges.ts successfully!');
+      setStatusMessage('Saved to src/data/challengeDiagrams.json. Commit that file to publish the new diagram.');
       setTimeout(() => {
         setSaveStatus('idle');
         setStatusMessage(null);
       }, 4000);
     } catch (err: any) {
       setSaveStatus('error');
-      setStatusMessage(`Could not save automatically: ${err.message}. You can download the file or copy code.`);
+      setStatusMessage(`Couldn't save automatically (${err.message}). Use download or copy instead, and replace src/data/challengeDiagrams.json with it.`);
     }
   };
 
   const handleCopyCode = async () => {
     try {
-      await navigator.clipboard.writeText(generateChallengesTypeScriptContent());
+      await navigator.clipboard.writeText(generateDiagramsFileContent());
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 2500);
-      setStatusMessage('Copied challenges.ts TypeScript code to clipboard!');
+      setStatusMessage('Copied challengeDiagrams.json to the clipboard.');
       setTimeout(() => setStatusMessage(null), 3000);
     } catch {
       alert('Clipboard access denied. Please download the file instead.');
@@ -153,22 +145,22 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   };
 
   const handleDownloadFile = () => {
-    const content = generateChallengesTypeScriptContent();
-    const blob = new Blob([content], { type: 'text/typescript;charset=utf-8;' });
+    const content = generateDiagramsFileContent();
+    const blob = new Blob([content], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'challenges.ts';
+    link.download = 'challengeDiagrams.json';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    setStatusMessage('Downloaded challenges.ts successfully!');
+    setStatusMessage('Downloaded challengeDiagrams.json.');
     setTimeout(() => setStatusMessage(null), 3000);
   };
 
   const handleRevertChanges = () => {
-    setChallengeBubbles(JSON.parse(JSON.stringify(currentChallenge.initialBubbles)));
+    setChallengeBubbles(clone(currentChallenge.initialBubbles));
     setHasUnsavedChanges(false);
     setStatusMessage('Reverted to original challenge baseline');
     setTimeout(() => setStatusMessage(null), 3000);
@@ -181,21 +173,18 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
       hint: req.hint,
     }));
 
+    // Score = checks passed (shown as a percentage).
     const passedCount = details.filter((d) => d.passed).length;
-    let earnedStars = 1;
-    if (passedCount === currentChallenge.requirements.length) {
-      earnedStars = 3;
-    } else if (passedCount >= Math.ceil(currentChallenge.requirements.length / 2)) {
-      earnedStars = 2;
-    }
+    const total = currentChallenge.requirements.length;
 
     setEvaluationResult({
       tested: true,
-      stars: earnedStars,
+      passed: passedCount,
+      total,
       details,
     });
 
-    onUpdateScore(currentChallenge.id, earnedStars);
+    onUpdateScore(currentChallenge.id, passedCount);
   };
 
   const selectedBubble = challengeBubbles.find((b) => b.id === selectedBubbleId) || null;
@@ -206,7 +195,7 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
   };
 
   const displayedBubbles = isABComparing ? currentChallenge.initialBubbles : challengeBubbles;
-  const currentSavedStars = challengeScores[currentChallenge.id] || 0;
+  const bestPercent = challengePercent(currentChallenge.id, challengeScores[currentChallenge.id] || 0);
 
   return (
     <div id="challenges-view" className="w-full h-full flex flex-col overflow-hidden">
@@ -214,7 +203,8 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
       <div className="h-12 border-b border-slate-800 bg-slate-950/90 px-4 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
           {MIXING_CHALLENGES.map((ch, idx) => {
-            const stars = challengeScores[ch.id] || 0;
+            const pct = challengePercent(ch.id, challengeScores[ch.id] || 0);
+            const tried = ch.id in challengeScores && (challengeScores[ch.id] || 0) > 0;
             const isSelected = activeChallengeIdx === idx;
             return (
               <button
@@ -228,9 +218,9 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
               >
                 <span>{ch.title.split(':')[0]}</span>
                 <span className="truncate max-w-[120px]">{ch.title.split(': ')[1]}</span>
-                {stars > 0 && (
-                  <span className="text-[10px] text-amber-300 font-mono">
-                    {'★'.repeat(stars)}
+                {tried && (
+                  <span className={`text-[10px] font-mono ${pct === 100 ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {pct}%
                   </span>
                 )}
               </button>
@@ -240,10 +230,12 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
 
         {/* Right Action Tools */}
         <div className="flex items-center gap-2">
+          {/* Teacher authoring tools: only when running locally or opened with ?teacher */}
+          {isAuthoringMode && (<>
           {/* Save Problem Diagram Button */}
           <button
             onClick={handleSaveToChallengesFile}
-            title="Save problem diagram state to challenges.ts"
+            title="Save this starting diagram to src/data/challengeDiagrams.json"
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
               saveStatus === 'saved'
                 ? 'bg-emerald-700 text-white'
@@ -273,14 +265,14 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
           <div className="flex items-center gap-1">
             <button
               onClick={handleCopyCode}
-              title="Copy formatted TypeScript code to clipboard"
+              title="Copy challengeDiagrams.json to the clipboard"
               className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800"
             >
               {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
             <button
               onClick={handleDownloadFile}
-              title="Download challenges.ts file directly"
+              title="Download challengeDiagrams.json"
               className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800"
             >
               <Download className="w-3.5 h-3.5" />
@@ -295,6 +287,7 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
               </button>
             )}
           </div>
+          </>)}
 
           {/* A/B Compare Toggle */}
           <button
@@ -360,30 +353,28 @@ export const ChallengesView: React.FC<ChallengesViewProps> = ({
                   <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                     {currentChallenge.difficulty}
                   </span>
-                  {currentSavedStars > 0 && (
+                  {bestPercent > 0 && (
                     <span className="text-xs text-amber-300 font-mono font-bold flex items-center">
-                      Best: {currentSavedStars} / 3 Stars
+                      Best: {bestPercent}%
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-slate-300 mt-1 font-medium">{currentChallenge.taskGoal}</p>
               </div>
 
-              {/* Evaluation Stars Badge if tested */}
+              {/* Result of the last check: checks passed and percentage */}
               {evaluationResult && (
-                <div className="flex items-center gap-1 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
-                  {Array.from({ length: 3 }).map((_, i) => (
-                    <Star
-                      key={i}
-                      className={`w-4 h-4 ${
-                        i < evaluationResult.stars
-                          ? 'fill-amber-400 text-amber-400'
-                          : 'text-slate-700'
-                      }`}
-                    />
-                  ))}
-                  <span className="text-xs font-bold text-white ml-1">
-                    {evaluationResult.stars === 3 ? 'Perfect Mix!' : evaluationResult.stars === 2 ? 'Getting Warmer' : 'Keep Tweaking'}
+                <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 shrink-0">
+                  <span
+                    className={`text-sm font-bold font-mono ${
+                      evaluationResult.passed === evaluationResult.total ? 'text-emerald-300' : 'text-amber-300'
+                    }`}
+                  >
+                    {Math.round((evaluationResult.passed / (evaluationResult.total || 1)) * 100)}%
+                  </span>
+                  <span className="text-xs text-slate-300">
+                    {evaluationResult.passed} of {evaluationResult.total} checks
+                    {evaluationResult.passed === evaluationResult.total ? ' — solved!' : ''}
                   </span>
                 </div>
               )}

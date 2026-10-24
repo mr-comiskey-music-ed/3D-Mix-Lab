@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { memoIgnoringCallbacks } from '../utils/memo';
 import {
   DEFAULT_PALETTE_ITEMS,
   INSTRUMENT_CATEGORIES,
@@ -25,7 +26,7 @@ interface PaletteProps {
   theme?: ThemeMode;
 }
 
-export const Palette: React.FC<PaletteProps> = ({
+const PaletteInner: React.FC<PaletteProps> = ({
   onAddBubble,
   isOpen,
   onToggleOpen,
@@ -384,3 +385,6 @@ export const Palette: React.FC<PaletteProps> = ({
     </div>
   );
 };
+
+// Redraw only when this panel's data changes (not on every play-clock tick).
+export const Palette = memoIgnoringCallbacks(PaletteInner);

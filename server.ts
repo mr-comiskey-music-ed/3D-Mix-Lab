@@ -32,25 +32,19 @@ async function startServer() {
     }
   });
 
-  // API endpoint to save challenges.ts
-  app.post('/api/save-challenges', (req, res) => {
+  // API endpoint to save the challenge starting diagrams (src/data/challengeDiagrams.json).
+  // Only the diagrams are written; the pass/fail checks in challenges.ts are never touched.
+  app.post('/api/save-challenge-diagrams', (req, res) => {
     try {
-      const { challenges } = req.body;
-      if (!challenges || !Array.isArray(challenges)) {
-        return res.status(400).json({ error: 'Invalid challenges data' });
+      const { diagrams } = req.body;
+      if (!diagrams || typeof diagrams !== 'object' || Array.isArray(diagrams)) {
+        return res.status(400).json({ error: 'Invalid diagrams data' });
       }
-
-      const fileContent = `import { Challenge } from '../types';\n\nexport const MIXING_CHALLENGES: Challenge[] = ${JSON.stringify(
-        challenges,
-        null,
-        2
-      )};\n`;
-
-      const filePath = path.resolve(process.cwd(), 'src/data/challenges.ts');
-      fs.writeFileSync(filePath, fileContent, 'utf-8');
+      const filePath = path.resolve(process.cwd(), 'src/data/challengeDiagrams.json');
+      fs.writeFileSync(filePath, JSON.stringify(diagrams, null, 2) + '\n', 'utf-8');
       res.json({ success: true });
     } catch (err: any) {
-      console.error('Error saving challenges:', err);
+      console.error('Error saving challenge diagrams:', err);
       res.status(500).json({ error: err.message });
     }
   });
