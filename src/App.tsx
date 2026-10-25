@@ -1,11 +1,20 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   SoundBubble,
   TimelineRegion,
   ViewMode,
   ActiveTab,
-  ThemeMode
+  ThemeMode,
+  RosterStudentRow,
+  clampPan,
 } from './types';
+import { useMixHistory, CommitOptions } from './hooks/useMixHistory';
+import { loadJSON, saveJSON } from './utils/storage';
+import { RosterParseResult } from './utils/serialization';
+import { ReviewBar } from './components/ReviewBar';
+import { DiagramSongView } from './components/DiagramSongView';
+import { SongResult } from './utils/songMatch';
+import { overallPercent } from './utils/progress';
 import { INITIAL_SANDBOX_BUBBLES, getDiagramName } from './data/presets';
 import { Header } from './components/Header';
 import { Stage3D } from './components/Stage3D';
@@ -17,10 +26,32 @@ import { ChallengesView } from './components/ChallengesView';
 import { ExamplesView } from './components/ExamplesView';
 import { GradeReportView } from './components/GradeReportView';
 import { QuickTourModal } from './components/QuickTourModal';
-import { StandaloneExportModal } from './components/StandaloneExportModal';
 import { ConfirmDeleteModal, ConfirmDeleteState } from './components/ConfirmDeleteModal';
 import { YouTubeEmbed } from './components/YouTubeEmbed';
 import { audioEngine, AudioSourceInfo } from './utils/audioEngine';
+
+// ---- Saved work (this browser only) ----
+const SANDBOX_KEY = 'sandbox:v1';
+// v2 = checks passed per challenge (v1 stored stars and is no longer read)
+const SCORES_KEY = 'scores:v2';
+const EXPLAIN_KEY = 'explanations:v1';
+const SONG_RESULTS_KEY = 'songResults:v1';
+const SONG_PEEKS_KEY = 'songPeeks:v1';
+
+/** Make sure a saved/imported mix is usable: an array of bubbles with pan in range. */
+function sanitizeBubbles(value: unknown, fallback: SoundBubble[]): SoundBubble[] {
+  if (!Array.isArray(value)) return fallback;
+  const ok = value.filter((b) => b && typeof b === 'object' && typeof b.id === 'string' && typeof b.x === 'number');
+  return ok.map((b) => ({ ...b, x: clampPan(b.x), regions: Array.isArray(b.regions) ? b.regions : [] }));
+}
+
+const DEFAULT_SCORES: Record<string, number> = {
+  'challenge-1': 0,
+  'challenge-2': 0,
+  'challenge-3': 0,
+  'challenge-4': 0,
+  'challenge-5': 0,
+};
 
 export default function App() {
   // Navigation & View State
@@ -30,7 +61,6 @@ export default function App() {
 
   // Modals
   const [isTourOpen, setIsTourOpen] = useState(false);
-  const [isExportOpen, setIsExportOpen] = useState(false);
 
   // Panels Open/Close
   const [isPaletteOpen, setIsPaletteOpen] = useState(true);
@@ -50,21 +80,81 @@ export default function App() {
   });
 
   // Challenge Scores (stars earned per challenge)
-  const [challengeScores, setChallengeScores] = useState<Record<string, number>>({
-    'challenge-1': 0,
-    'challenge-2': 0,
-    'challenge-3': 0,
-    'challenge-4': 0,
-    'challenge-5': 0,
-  });
+  const [challengeScores, setChallengeScores] = useState<Record<string, number>>(() => ({
+    ...DEFAULT_SCORES,
+    ...loadJSON<Record<string, number>>(SCORES_KEY, {}),
+  }));
 
-  // Sandbox Bubbles & State History (Undo / Redo Stack)
-  const [bubbles, setBubbles] = useState<SoundBubble[]>(INITIAL_SANDBOX_BUBBLES);
+  // Sandbox mix + undo/redo history (restored from this browser if the student was here before)
+  const history = useMixHistory(
+    useMemo(() => sanitizeBubbles(loadJSON(SANDBOX_KEY, null), INITIAL_SANDBOX_BUBBLES), [])
+  );
   const [selectedBubbleIds, setSelectedBubbleIds] = useState<string[]>(['bubble-vocal']);
 
+  // ---- Teacher review mode: step through student submissions without touching your own mix ----
+  const [roster, setRoster] = useState<RosterParseResult | null>(null);
+  const [rosterInput, setRosterInput] = useState('');
+  const [review, setReview] = useState<{ rows: RosterStudentRow[]; index: number } | null>(null);
+  const [reviewBubbles, setReviewBubbles] = useState<SoundBubble[]>([]);
+
+  // What the stage shows: the student being reviewed, or your own mix.
+  const bubbles = review ? reviewBubbles : history.bubbles;
+  const bubblesRef = useRef(bubbles);
+  bubblesRef.current = bubbles;
+
+  /** Every edit goes through here. In review mode edits are temporary and never saved. */
+  const applyUpdate = useCallback(
+    (fn: (prev: SoundBubble[]) => SoundBubble[], options?: CommitOptions) => {
+      if (review) {
+        setReviewBubbles((prev) => fn(prev));
+      } else {
+        history.update(fn, options);
+      }
+    },
+    [review, history.update]
+  );
+
   const selectedBubbleId = selectedBubbleIds[0] || null;
-  const selectedBubbles = bubbles.filter((b) => selectedBubbleIds.includes(b.id));
+  const selectedBubbles = useMemo(
+    () => bubbles.filter((b) => selectedBubbleIds.includes(b.id)),
+    [bubbles, selectedBubbleIds]
+  );
   const selectedBubble = selectedBubbles[0] || null;
+
+  // Autosave the student's own mix and stars (debounced). Never saves a reviewed student's mix.
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(SANDBOX_KEY, history.bubbles), 400);
+    return () => clearTimeout(t);
+  }, [history.bubbles]);
+  useEffect(() => {
+    saveJSON(SCORES_KEY, challengeScores);
+  }, [challengeScores]);
+
+  // "Explain your fix" answers per challenge (go into the submission code)
+  const [explanations, setExplanations] = useState<Record<string, string>>(() => loadJSON(EXPLAIN_KEY, {}));
+  useEffect(() => {
+    const t = setTimeout(() => saveJSON(EXPLAIN_KEY, explanations), 400);
+    return () => clearTimeout(t);
+  }, [explanations]);
+
+  // "Diagram a Song": first-reveal results, and songs whose answer was opened in Examples first
+  const [songResults, setSongResults] = useState<Record<string, SongResult>>(() => loadJSON(SONG_RESULTS_KEY, {}));
+  const [songPeeks, setSongPeeks] = useState<Record<string, boolean>>(() => loadJSON(SONG_PEEKS_KEY, {}));
+  useEffect(() => saveJSON(SONG_RESULTS_KEY, songResults), [songResults]);
+  useEffect(() => saveJSON(SONG_PEEKS_KEY, songPeeks), [songPeeks]);
+  const handleSongReveal = useCallback(
+    (songId: string, match: number, placements: SongResult['placements']) => {
+      setSongResults((prev) =>
+        prev[songId]
+          ? prev // the first reveal is the score
+          : { ...prev, [songId]: { match, placements, revealedAt: Date.now(), sawAnswerFirst: !!songPeeks[songId] } }
+      );
+    },
+    [songPeeks]
+  );
+  const handleViewAnswer = useCallback((songId: string) => {
+    setSongPeeks((prev) => (prev[songId] ? prev : { ...prev, [songId]: true }));
+  }, []);
 
   // Depth Hotkey HUD Toast
   const [hotkeyToast, setHotkeyToast] = useState<{
@@ -80,45 +170,38 @@ export default function App() {
     return () => clearTimeout(t);
   }, [hotkeyToast]);
 
-  // History Stacks
-  const historyRef = useRef<SoundBubble[][]>([INITIAL_SANDBOX_BUBBLES]);
-  const historyIndexRef = useRef<number>(0);
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
-
-  const updateHistory = useCallback((newBubbles: SoundBubble[]) => {
-    // Truncate redo branch
-    const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
-    newHistory.push(JSON.parse(JSON.stringify(newBubbles)));
-    // Cap history at 50 steps
-    if (newHistory.length > 50) {
-      newHistory.shift();
-    }
-    historyRef.current = newHistory;
-    historyIndexRef.current = newHistory.length - 1;
-    setCanUndo(historyIndexRef.current > 0);
-    setCanRedo(false);
-  }, []);
-
+  const canUndo = history.canUndo && !review;
+  const canRedo = history.canRedo && !review;
   const handleUndo = useCallback(() => {
-    if (historyIndexRef.current > 0) {
-      historyIndexRef.current -= 1;
-      const prev = historyRef.current[historyIndexRef.current];
-      setBubbles(JSON.parse(JSON.stringify(prev)));
-      setCanUndo(historyIndexRef.current > 0);
-      setCanRedo(true);
-    }
-  }, []);
-
+    if (!review) history.undo();
+  }, [review, history.undo]);
   const handleRedo = useCallback(() => {
-    if (historyIndexRef.current < historyRef.current.length - 1) {
-      historyIndexRef.current += 1;
-      const next = historyRef.current[historyIndexRef.current];
-      setBubbles(JSON.parse(JSON.stringify(next)));
-      setCanUndo(true);
-      setCanRedo(historyIndexRef.current < historyRef.current.length - 1);
-    }
-  }, []);
+    if (!review) history.redo();
+  }, [review, history.redo]);
+
+  // When a song with a different length loads, regions that ran to the end of the old song
+  // keep running to the end of the new one (and nothing sticks out past the end).
+  // This is automatic, so it doesn't add an undo step.
+  const prevDurationRef = useRef(songDuration);
+  useEffect(() => {
+    const prev = prevDurationRef.current;
+    prevDurationRef.current = songDuration;
+    if (!songDuration || Math.abs(prev - songDuration) < 0.5) return;
+    history.update((list) => {
+      let changed = false;
+      const next = list.map((b) => {
+        const regions = (b.regions || []).map((r) => {
+          const end = r.end >= prev - 0.5 || r.end > songDuration ? songDuration : r.end;
+          if (end === r.end) return r;
+          changed = true;
+          return { ...r, end: Math.max(end, Math.min(r.start + 1, songDuration)) };
+        });
+        return regions.some((r, i) => r !== b.regions[i]) ? { ...b, regions } : b;
+      });
+      return changed ? next : list;
+    }, { record: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songDuration]);
 
   // Sync with audio engine
   useEffect(() => {
@@ -134,27 +217,21 @@ export default function App() {
   }, [songDuration]);
 
   // Bubble Manipulation Handlers
+  // Drags, sliders, resizes and timeline edits: one undo step per gesture.
   const handleUpdateBubble = useCallback(
     (updated: SoundBubble) => {
-      setBubbles((prev) => {
-        const next = prev.map((b) => (b.id === updated.id ? updated : b));
-        updateHistory(next);
-        return next;
-      });
+      const fixed = { ...updated, x: clampPan(updated.x) };
+      applyUpdate((prev) => prev.map((b) => (b.id === fixed.id ? fixed : b)), { coalesce: true });
     },
-    [updateHistory]
+    [applyUpdate]
   );
 
   const handleUpdateBubbles = useCallback(
-    (updatedList: SoundBubble[]) => {
-      setBubbles((prev) => {
-        const updateMap = new Map(updatedList.map((b) => [b.id, b]));
-        const next = prev.map((b) => updateMap.get(b.id) || b);
-        updateHistory(next);
-        return next;
-      });
+    (updatedList: SoundBubble[], options: CommitOptions = { coalesce: true }) => {
+      const updateMap = new Map(updatedList.map((b) => [b.id, { ...b, x: clampPan(b.x) }]));
+      applyUpdate((prev) => prev.map((b) => updateMap.get(b.id) || b), options);
     },
-    [updateHistory]
+    [applyUpdate]
   );
 
   const handleAddBubble = useCallback(
@@ -172,14 +249,11 @@ export default function App() {
         z: 100 - (template.volume !== undefined ? template.volume : 80),
         regions: [{ id: 'r_' + Date.now().toString(36), start: 0, end: songDuration }],
       };
-      setBubbles((prev) => {
-        const next = [...prev, newBubble];
-        updateHistory(next);
-        return next;
-      });
+      newBubble.x = clampPan(newBubble.x);
+      applyUpdate((prev) => [...prev, newBubble]);
       setSelectedBubbleIds([newId]);
     },
-    [songDuration, updateHistory]
+    [songDuration, applyUpdate]
   );
 
   // Selected Arrangement Timeline Region (when user interacts with a region block)
@@ -200,22 +274,18 @@ export default function App() {
         ...target,
         id: dupId,
         name: target.name,
-        x: Math.min(100, target.x + 8),
+        x: clampPan(target.x + 8),
         y: Math.min(100, target.y + 5),
         regions: target.regions.map((r) => ({
           ...r,
           id: 'r_' + Math.random().toString(36).slice(2, 8),
         })),
       };
-      setBubbles((prev) => {
-        const next = [...prev, dup];
-        updateHistory(next);
-        return next;
-      });
+      applyUpdate((prev) => [...prev, dup]);
       setSelectedBubbleIds([dupId]);
       setSelectedTimelineRegion(null);
     },
-    [bubbles, updateHistory]
+    [bubbles, applyUpdate]
   );
 
   const handleDuplicateMultipleBubbles = useCallback(
@@ -231,7 +301,7 @@ export default function App() {
           ...target,
           id: dupId,
           name: target.name,
-          x: Math.min(100, target.x + 6),
+          x: clampPan(target.x + 6),
           y: Math.min(100, target.y + 4),
           regions: target.regions.map((r) => ({
             ...r,
@@ -241,15 +311,11 @@ export default function App() {
         newIds.push(dupId);
       });
 
-      setBubbles((prev) => {
-        const next = [...prev, ...newDups];
-        updateHistory(next);
-        return next;
-      });
+      applyUpdate((prev) => [...prev, ...newDups]);
       setSelectedBubbleIds(newIds);
       setSelectedTimelineRegion(null);
     },
-    [bubbles, updateHistory]
+    [bubbles, applyUpdate]
   );
 
   const requestDeleteBubble = useCallback(
@@ -305,46 +371,32 @@ export default function App() {
 
     if (deleteConfirmState.type === 'instrument') {
       const id = deleteConfirmState.bubbleId;
-      setBubbles((prev) => {
-        const next = prev.filter((b) => b.id !== id);
-        updateHistory(next);
-        return next;
-      });
+      applyUpdate((prev) => prev.filter((b) => b.id !== id));
       setSelectedBubbleIds((prev) => prev.filter((i) => i !== id));
       if (selectedTimelineRegion?.bubbleId === id) {
         setSelectedTimelineRegion(null);
       }
     } else if (deleteConfirmState.type === 'multiple-instruments') {
       const ids = deleteConfirmState.bubbleIds;
-      setBubbles((prev) => {
-        const next = prev.filter((b) => !ids.includes(b.id));
-        updateHistory(next);
-        return next;
-      });
+      applyUpdate((prev) => prev.filter((b) => !ids.includes(b.id)));
       setSelectedBubbleIds((prev) => prev.filter((id) => !ids.includes(id)));
       if (selectedTimelineRegion && ids.includes(selectedTimelineRegion.bubbleId)) {
         setSelectedTimelineRegion(null);
       }
     } else if (deleteConfirmState.type === 'timeline-region') {
       const { bubbleId, regionId } = deleteConfirmState;
-      setBubbles((prev) => {
-        const next = prev.map((b) => {
-          if (b.id !== bubbleId) return b;
-          return {
-            ...b,
-            regions: (b.regions || []).filter((r) => r.id !== regionId),
-          };
-        });
-        updateHistory(next);
-        return next;
-      });
+      applyUpdate((prev) =>
+        prev.map((b) =>
+          b.id !== bubbleId ? b : { ...b, regions: (b.regions || []).filter((r) => r.id !== regionId) }
+        )
+      );
       if (selectedTimelineRegion?.regionId === regionId) {
         setSelectedTimelineRegion(null);
       }
     }
 
     setDeleteConfirmState(null);
-  }, [deleteConfirmState, selectedTimelineRegion, updateHistory]);
+  }, [deleteConfirmState, selectedTimelineRegion, applyUpdate]);
 
   const handleLoadPresetTemplate = useCallback(
     (presetName: string) => {
@@ -419,8 +471,7 @@ export default function App() {
             regions: [{ id: 'r4', start: 30, end: 180 }],
           },
         ];
-        setBubbles(popBubbles);
-        updateHistory(popBubbles);
+        applyUpdate(() => popBubbles);
         setSelectedBubbleIds(['b-pop-vox']);
       } else if (presetName === 'rock-band') {
         const rockBubbles: SoundBubble[] = [
@@ -480,7 +531,7 @@ export default function App() {
             name: 'Guitar Left',
             category: 'guitars',
             color: '#eab308',
-            x: -75,
+            x: -64,
             y: 52,
             z: 28,
             width: 46,
@@ -497,7 +548,7 @@ export default function App() {
             name: 'Guitar Right',
             category: 'guitars',
             color: '#ca8a04',
-            x: 75,
+            x: 64,
             y: 52,
             z: 28,
             width: 46,
@@ -527,13 +578,48 @@ export default function App() {
             regions: [{ id: 'r6', start: 10, end: 195 }],
           },
         ];
-        setBubbles(rockBubbles);
-        updateHistory(rockBubbles);
+        applyUpdate(() => rockBubbles);
         setSelectedBubbleIds(['b-rock-vox']);
       }
     },
-    [updateHistory]
+    [applyUpdate]
   );
+
+  // ---- Review mode controls ----
+  const showReviewEntry = useCallback((rows: RosterStudentRow[], index: number) => {
+    const row = rows[index];
+    setReview({ rows, index });
+    setReviewBubbles(sanitizeBubbles(row.submission.sandboxSnapshot?.bubbles, []));
+    setSelectedBubbleIds([]);
+    setSelectedTimelineRegion(null);
+  }, []);
+
+  const startReview = useCallback(
+    (rows: RosterStudentRow[], index: number) => {
+      if (!rows.length) return;
+      showReviewEntry(rows, Math.max(0, Math.min(rows.length - 1, index)));
+      setActiveTab('sandbox');
+    },
+    [showReviewEntry]
+  );
+
+  const stepReview = useCallback(
+    (delta: number) => {
+      if (!review) return;
+      const next = review.index + delta;
+      if (next < 0 || next >= review.rows.length) return;
+      showReviewEntry(review.rows, next);
+    },
+    [review, showReviewEntry]
+  );
+
+  const exitReview = useCallback((backToList: boolean) => {
+    setReview(null);
+    setReviewBubbles([]);
+    setSelectedBubbleIds([]);
+    setSelectedTimelineRegion(null);
+    if (backToList) setActiveTab('grader');
+  }, []);
 
   // Z-Axis Depth Hotkeys Mapping: 1 corresponds to 0% and 0 corresponds to 100%
   const Z_HOTKEY_MAP: Record<string, number> = {
@@ -580,7 +666,7 @@ export default function App() {
               z: targetZ,
               volume: targetVol,
             }));
-          handleUpdateBubbles(updated);
+          handleUpdateBubbles(updated, { coalesce: false });
           setHotkeyToast({
             key: e.key,
             z: targetZ,
@@ -669,6 +755,9 @@ export default function App() {
         audioEngine.togglePlay();
       }
 
+      // In review mode, Left/Right step through students (handled by the review bar).
+      if (review && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+
       // Media Jump: Left Arrow (-5s), Right Arrow (+5s)
       if (e.key === 'ArrowLeft' && !isInput) {
         e.preventDefault();
@@ -693,9 +782,10 @@ export default function App() {
     selectedTimelineRegion,
     requestDeleteTimelineRegion,
     requestDeleteMultipleBubbles,
+    review,
   ]);
 
-  const totalChallengeStars = (Object.values(challengeScores) as number[]).reduce((a: number, b: number) => a + b, 0);
+  const challengePercent = overallPercent(challengeScores);
 
   return (
     <div
@@ -725,8 +815,7 @@ export default function App() {
           setIsTimelineOpen(true);
           setIsTourOpen(true);
         }}
-        onOpenExport={() => setIsExportOpen(true)}
-        totalChallengeStars={totalChallengeStars}
+        challengePercent={challengePercent}
       />
 
       {/* 2. Main Content Area */}
@@ -834,12 +923,14 @@ export default function App() {
             theme={theme}
             currentTime={currentTime}
             challengeScores={challengeScores}
-            onUpdateScore={(id, stars) =>
+            onUpdateScore={(id, passed) =>
               setChallengeScores((prev) => ({
                 ...prev,
-                [id]: Math.max(prev[id] || 0, stars),
+                [id]: Math.max(prev[id] || 0, passed),
               }))
             }
+            explanations={explanations}
+            onExplanationChange={(id, text) => setExplanations((prev) => ({ ...prev, [id]: text }))}
           />
         )}
 
@@ -849,6 +940,21 @@ export default function App() {
             viewMode={viewMode}
             theme={theme}
             currentTime={currentTime}
+            onViewAnswer={(id) => {
+              // Only matters if the student hasn't diagrammed this song yet
+              if (!songResults[id]) handleViewAnswer(id);
+            }}
+          />
+        )}
+
+        {/* Tab 4: Diagram a Song (ear training against the example diagrams) */}
+        {activeTab === 'songs' && (
+          <DiagramSongView
+            viewMode={viewMode}
+            theme={theme}
+            currentTime={currentTime}
+            results={songResults}
+            onReveal={handleSongReveal}
           />
         )}
 
@@ -856,14 +962,15 @@ export default function App() {
         {activeTab === 'grader' && (
           <GradeReportView
             challengeScores={challengeScores}
-            sandboxBubbles={bubbles}
+            sandboxBubbles={history.bubbles}
             songDuration={songDuration}
-            onImportStudentMix={(importedBubbles, importedDuration) => {
-              setBubbles(importedBubbles);
-              updateHistory(importedBubbles);
-              setSongDuration(importedDuration);
-            }}
-            onSwitchToSandbox={() => setActiveTab('sandbox')}
+            roster={roster}
+            onRosterChange={setRoster}
+            rosterInput={rosterInput}
+            onRosterInputChange={setRosterInput}
+            onReviewStudents={startReview}
+            explanations={explanations}
+            songResults={songResults}
           />
         )}
       </main>
@@ -896,6 +1003,19 @@ export default function App() {
         theme={theme}
       />
 
+      {/* Teacher review bar: who you're looking at, their scores, previous/next */}
+      {review && activeTab === 'sandbox' && (
+        <ReviewBar
+          row={review.rows[review.index]}
+          position={review.index}
+          total={review.rows.length}
+          onPrev={() => stepReview(-1)}
+          onNext={() => stepReview(1)}
+          onBackToList={() => exitReview(true)}
+          onExit={() => exitReview(false)}
+        />
+      )}
+
       {/* Depth Hotkey Notification HUD Toast */}
       {hotkeyToast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-all duration-200 animate-in fade-in slide-in-from-top-2">
@@ -925,13 +1045,6 @@ export default function App() {
       <QuickTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-      />
-
-      {/* Standalone Google Apps Script HTML Modal */}
-      <StandaloneExportModal
-        isOpen={isExportOpen}
-        onClose={() => setIsExportOpen(false)}
-        theme={theme}
       />
 
       {/* Confirmation Modal for Instrument & Arrangement Region Deletion */}

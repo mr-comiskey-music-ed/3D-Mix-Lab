@@ -1,93 +1,10 @@
 @import "tailwindcss";
 
-/* Digital Audio Distortion & Saturation Glitch Animations */
-@keyframes glitch-tear-left {
-  0%, 100% {
-    transform: translateX(0px);
-  }
-  20% {
-    transform: translateX(-12px) skewX(-1.5deg);
-  }
-  40% {
-    transform: translateX(8px);
-  }
-  60% {
-    transform: translateX(-18px) scaleY(1.15);
-  }
-  80% {
-    transform: translateX(6px);
-  }
+/* Scrollable areas that shouldn't show their own scrollbar (e.g. timeline track names,
+   which scroll together with the lanes beside them). */
+.no-scrollbar {
+  scrollbar-width: none;
 }
-
-@keyframes glitch-tear-right {
-  0%, 100% {
-    transform: translateX(0px);
-  }
-  15% {
-    transform: translateX(14px) skewX(1.5deg);
-  }
-  35% {
-    transform: translateX(-8px);
-  }
-  55% {
-    transform: translateX(18px) scaleY(0.9);
-  }
-  75% {
-    transform: translateX(-12px);
-  }
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
-
-@keyframes glitch-tear-fast {
-  0%, 100% {
-    transform: translateX(0);
-    opacity: 0.95;
-  }
-  12% {
-    transform: translateX(-15px);
-    opacity: 0.8;
-  }
-  28% {
-    transform: translateX(14px);
-    opacity: 1;
-  }
-  45% {
-    transform: translateX(-9px);
-    opacity: 0.9;
-  }
-  62% {
-    transform: translateX(16px);
-    opacity: 1;
-  }
-  80% {
-    transform: translateX(-12px);
-    opacity: 0.85;
-  }
-}
-
-@keyframes glitch-flicker {
-  0%, 100% {
-    opacity: 0.95;
-  }
-  24% {
-    opacity: 0.95;
-  }
-  25% {
-    opacity: 0.45;
-  }
-  26% {
-    opacity: 1;
-  }
-  54% {
-    opacity: 0.85;
-  }
-  78% {
-    opacity: 1;
-  }
-  79% {
-    opacity: 0.5;
-  }
-  80% {
-    opacity: 0.95;
-  }
-}
-

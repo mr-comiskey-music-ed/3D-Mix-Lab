@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { EXAMPLE_TRACKS } from '../data/examples';
 import { SoundBubble, ViewMode, ThemeMode, ExampleTrack } from '../types';
 import { Stage3D } from './Stage3D';
+import { isAuthoringMode } from '../utils/storage';
 import { audioEngine } from '../utils/audioEngine';
 import { ConfirmDeleteModal, ConfirmDeleteState } from './ConfirmDeleteModal';
 import {
@@ -34,12 +35,15 @@ interface ExamplesViewProps {
   viewMode: ViewMode;
   theme: ThemeMode;
   currentTime: number;
+  /** Called when a song's diagram is shown (it's the answer key for "Diagram a Song"). */
+  onViewAnswer?: (songId: string) => void;
 }
 
 export const ExamplesView: React.FC<ExamplesViewProps> = ({
   viewMode,
   theme,
   currentTime,
+  onViewAnswer,
 }) => {
   // Master list of tracks (editable in memory)
   const [tracks, setTracks] = useState<ExampleTrack[]>(() =>
@@ -68,6 +72,12 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
 
   const activeTrack = tracks[activeTrackIdx] || tracks[0];
   const bubbles = activeTrack.bubbles;
+
+  // Let the app know this song's answer diagram has been seen
+  useEffect(() => {
+    if (activeTrack?.id) onViewAnswer?.(activeTrack.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTrack?.id]);
 
   // Track audio engine state
   useEffect(() => {
@@ -418,6 +428,7 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
             </button>
           ))}
 
+          {isAuthoringMode && (
           <button
             onClick={handleCreateNewExample}
             title="Create a new example diagram"
@@ -426,6 +437,7 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
             <Plus className="w-3.5 h-3.5" />
             <span>New Diagram</span>
           </button>
+          )}
         </div>
 
         {/* Right: Audio Playback, Mode Switcher & Save to examples.ts */}
@@ -472,6 +484,8 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
             </button>
           </div>
 
+          {/* Teacher authoring tools: only when running locally or opened with ?teacher */}
+          {isAuthoringMode && (<>
           {/* Mode Switcher: View vs Edit */}
           <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-xs">
             <button
@@ -556,6 +570,7 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
               </button>
             )}
           </div>
+          </>)}
         </div>
       </div>
 

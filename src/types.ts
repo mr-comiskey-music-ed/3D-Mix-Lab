@@ -1,7 +1,10 @@
-export type ViewMode = 'front' | 'top';
-export type ActiveTab = 'sandbox' | 'challenges' | 'examples' | 'grader';
+export type ViewMode = 'front' | 'top' | '3d';
+
+/** Pan positions run from -PAN_LIMIT (hard left) to +PAN_LIMIT (hard right). */
+export const PAN_LIMIT = 64;
+export const clampPan = (x: number) => Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, Math.round(x)));
+export type ActiveTab = 'sandbox' | 'challenges' | 'examples' | 'songs' | 'grader';
 export type ThemeMode = 'dark' | 'light';
-export type GraphPaperStyle = 'blueprint' | 'charcoal' | 'parchment';
 
 export interface TimelineRegion {
   id: string;
@@ -24,7 +27,7 @@ export interface SoundBubble {
     | 'fx';
   color: string;
   // 3D coordinates (-100 to +100 for X, 0 to 100 for Y and Z)
-  x: number; // Pan: -100 (Hard Left) to +100 (Hard Right), 0 = Center
+  x: number; // Pan: -64 (Hard Left) to +64 (Hard Right), 0 = Center (see PAN_LIMIT)
   y: number; // Frequency: 0 (Sub/Bass 20-80Hz) to 100 (High Air 12-20kHz)
   z: number; // Depth: 0 (Foreground/In-face) to 100 (Deep background/Reverb tail)
   autoZ?: boolean; // When true, Z is computed from Volume, Compression & Reverb
@@ -91,6 +94,10 @@ export interface StudentSubmission {
     songDuration: number;
   };
   signature: string;
+  /** "Explain your fix" text for each challenge, by challenge id. */
+  explanations?: Record<string, string>;
+  /** "Diagram a Song" results, by example song id. */
+  songResults?: Record<string, import('./utils/songMatch').SongResult>;
 }
 
 export interface RosterStudentRow {
@@ -102,6 +109,8 @@ export interface RosterStudentRow {
   status: 'Passed' | 'Needs Review' | 'Perfect';
   rawCode: string;
   submission: StudentSubmission;
+  /** True when the same student name appears with more than one different code. */
+  hasMultipleSubmissions?: boolean;
 }
 
 export interface TourStep {

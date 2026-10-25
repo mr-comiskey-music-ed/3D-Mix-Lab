@@ -33,7 +33,7 @@ export const YouTubeEmbed: React.FC<YouTubeEmbedProps> = ({
 }) => {
   const [isApiReady, setIsApiReady] = React.useState(false);
   const playerRef = useRef<any>(null);
-  const containerId = 'youtube-iframe-mount';
+  const hostRef = useRef<HTMLDivElement>(null);
 
   // 1. Ensure YouTube Iframe API is loaded
   useEffect(() => {
@@ -67,63 +67,57 @@ export const YouTubeEmbed: React.FC<YouTubeEmbedProps> = ({
     return () => clearInterval(checkInterval);
   }, []);
 
-  // 2. Initialize or re-cue player when youtubeId or isApiReady changes
+  // 2. Create a fresh player for each video. The YouTube API replaces the element it is given
+  //    with an iframe and removes it again on destroy(), so we hand it a brand-new element each
+  //    time (inside a host div React owns). Reusing one fixed element id meant a second video
+  //    loaded straight after another could find nothing to attach to — leaving no player at all.
   useEffect(() => {
-    if (!isApiReady || !youtubeId) {
-      if (playerRef.current) {
-        try {
-          playerRef.current.destroy?.();
-        } catch {}
-        playerRef.current = null;
-      }
-      return;
-    }
+    const host = hostRef.current;
+    if (!isApiReady || !youtubeId || !host) return;
 
-    // Initialize YouTube Player
+    const mount = document.createElement('div');
+    mount.style.width = '100%';
+    mount.style.height = '100%';
+    host.appendChild(mount);
+
+    let player: any = null;
     try {
-      if (playerRef.current) {
-        // Just load the new video
-        playerRef.current.loadVideoById?.(youtubeId);
-      } else {
-        const player = new window.YT.Player(containerId, {
-          videoId: youtubeId,
-          width: '100%',
-          height: '100%',
-          playerVars: {
-            autoplay: 0,
-            controls: 1,
-            modestbranding: 1,
-            rel: 0,
-            playsinline: 1,
-            enablejsapi: 1,
-            origin: window.location.origin,
+      player = new window.YT.Player(mount, {
+        videoId: youtubeId,
+        width: '100%',
+        height: '100%',
+        playerVars: {
+          autoplay: 0,
+          controls: 1,
+          modestbranding: 1,
+          rel: 0,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
+        },
+        events: {
+          onReady: (event: any) => {
+            playerRef.current = event.target;
+            audioEngine.attachYouTubePlayer(event.target);
           },
-          events: {
-            onReady: (event: any) => {
-              playerRef.current = event.target;
-              audioEngine.attachYouTubePlayer(event.target);
-            },
-            onStateChange: (event: any) => {
-              audioEngine.handleYouTubeStateChange(event.data);
-            },
-            onError: (err: any) => {
-              console.warn('YouTube Player Event Error:', err);
-            },
+          onStateChange: (event: any) => {
+            audioEngine.handleYouTubeStateChange(event.data);
           },
-        });
-        playerRef.current = player;
-      }
+          onError: (err: any) => {
+            console.warn('YouTube Player Event Error:', err);
+          },
+        },
+      });
     } catch (err) {
       console.warn('Error setting up YouTube player:', err);
     }
 
     return () => {
-      if (playerRef.current) {
-        try {
-          playerRef.current.destroy?.();
-        } catch {}
-        playerRef.current = null;
-      }
+      try {
+        player?.destroy?.();
+      } catch {}
+      playerRef.current = null;
+      host.innerHTML = '';
     };
   }, [isApiReady, youtubeId]);
 
@@ -185,7 +179,7 @@ export const YouTubeEmbed: React.FC<YouTubeEmbedProps> = ({
 
       {/* Video Iframe Container */}
       <div className="w-full flex-1 bg-black relative">
-        <div id={containerId} className="w-full h-full" />
+        <div ref={hostRef} id="youtube-iframe-host" className="w-full h-full" />
       </div>
     </div>
   );

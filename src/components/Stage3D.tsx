@@ -1,8 +1,22 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { ViewMode, ThemeMode, GraphPaperStyle, SoundBubble } from '../types';
-import { FileText, Compass, AlertCircle } from 'lucide-react';
-import { getInstrumentIconComponent, StudioMonitorsIcon, PaperAirplaneIcon } from '../utils/instrumentIcons';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ViewMode, ThemeMode, SoundBubble, PAN_LIMIT, clampPan } from '../types';
 import { getFrequencyAssessment } from '../utils/frequencyAssessment';
+import {
+  Camera,
+  DR,
+  PAN_WORLD,
+  Vec3,
+  axesOf,
+  cameraFor,
+  depthOf,
+  lighting,
+  outline,
+  roomGrid,
+  roomHeight,
+  screenToWorldDelta,
+  worldOf,
+} from '../stage/roomMath';
+import { sphereImage } from '../stage/sphereShade';
 
 interface Stage3DProps {
   bubbles: SoundBubble[];
@@ -23,135 +37,261 @@ interface Stage3DProps {
   readOnly?: boolean;
   onToggleSolo?: (id: string) => void;
   onToggleMute?: (id: string) => void;
+  /**
+   * Answer overlay ("Diagram a Song"): where each sound sits in the reference mix.
+   * Drawn as dashed outlines, with a line from the matching sound (same id) to its spot.
+   */
+  ghostBubbles?: SoundBubble[];
+  /** Show the frequency-guidance "!" badges (off for ear-training). */
+  showGuidance?: boolean;
 }
 
-interface GlitchTearingBarsProps {
-  saturation: number;
-  theme: ThemeMode;
-}
-
-const GlitchTearingBars: React.FC<GlitchTearingBarsProps> = ({
-  saturation,
-  theme,
-}) => {
-  // Only start at 60% and subtly ramp up
-  if (saturation < 60) return null;
-
-  // Normalized progress from 0.0 (at 60%) to 1.0 (at 100%)
-  const progress = Math.min(1, Math.max(0, (saturation - 60) / 40));
-  // Smooth subtle ramp curve: soft initial entrance that progressively builds
-  const ramp = Math.pow(progress, 1.25);
-  const masterOpacity = 0.18 + ramp * 0.72; // 0.18 at 60% -> 0.90 at 100%
-
-  return (
-    <div
-      className="absolute inset-0 rounded-full overflow-hidden pointer-events-none z-[1] select-none"
-      style={{ opacity: masterOpacity }}
-    >
-      {/* 1. Subtle Interlaced CRT Scanlines & Phosphor Mesh strictly inside bubble boundary */}
-      <div
-        className="absolute inset-0 rounded-full overflow-hidden mix-blend-screen pointer-events-none"
-        style={{
-          opacity: 0.25 + ramp * 0.4,
-          backgroundImage: `
-            repeating-linear-gradient(0deg, rgba(0,0,0,0.7) 0px, rgba(0,0,0,0.7) 1.5px, transparent 1.5px, transparent 3px),
-            repeating-linear-gradient(90deg, rgba(255,0,80,0.25) 0px, rgba(0,240,255,0.25) 1px, rgba(57,255,20,0.25) 2px, transparent 3px)
-          `,
-          backgroundSize: '100% 3px, 3px 100%',
-        }}
-      />
-
-      {/* 2. Horizontal Glitch & Datamosh Slices - strictly contained inside inset-0 */}
-      {/* Slice 1 - Near Top: Cyan / White subtle razor slice (active from 60%) */}
-      <div
-        className="absolute inset-x-0 h-[2.5px] pointer-events-none"
-        style={{
-          top: '18%',
-          background: theme === 'light'
-            ? 'linear-gradient(90deg, transparent 5%, #0284c7 25%, #db2777 50%, #0284c7 75%, transparent 95%)'
-            : 'linear-gradient(90deg, transparent 5%, #00f0ff 25%, #ffffff 50%, #ff007f 75%, transparent 95%)',
-          animation: 'glitch-tear-left 0.28s infinite steps(2)',
-          opacity: 0.4 + ramp * 0.55,
-        }}
-      />
-
-      {/* Slice 2 - Upper-Mid: Multi-color Datamosh Slice (active from 60%) */}
-      <div
-        className="absolute inset-x-0 h-[3.5px] pointer-events-none"
-        style={{
-          top: '32%',
-          background: theme === 'light'
-            ? 'linear-gradient(90deg, transparent 0%, #db2777 20%, #0284c7 45%, #16a34a 70%, #eab308 90%, transparent 100%)'
-            : 'linear-gradient(90deg, transparent 0%, #ff007f 20%, #00f0ff 45%, #39ff14 70%, #ffe600 90%, transparent 100%)',
-          animation: 'glitch-tear-right 0.32s infinite steps(2)',
-          opacity: 0.35 + ramp * 0.6,
-        }}
-      />
-
-      {/* Slice 3 - Lower-Mid: Phosphor Green / Cyan Scanline (ramps in gently at 68%) */}
-      {saturation >= 68 && (
-        <div
-          className="absolute inset-x-0 h-[3px] pointer-events-none"
-          style={{
-            top: '58%',
-            background: theme === 'light'
-              ? 'linear-gradient(90deg, transparent 5%, #16a34a 25%, #0284c7 60%, #db2777 85%, transparent 95%)'
-              : 'linear-gradient(90deg, transparent 5%, #39ff14 25%, #00f0ff 60%, #ff007f 85%, transparent 95%)',
-            animation: 'glitch-tear-left 0.25s infinite steps(2)',
-            opacity: 0.3 + ((saturation - 68) / 32) * 0.65,
-          }}
-        />
-      )}
-
-      {/* Slice 4 - Lower: Canary Yellow / Magenta Slice (ramps in gently at 76%) */}
-      {saturation >= 76 && (
-        <div
-          className="absolute inset-x-0 h-[3.5px] pointer-events-none"
-          style={{
-            top: '72%',
-            background: theme === 'light'
-              ? 'linear-gradient(90deg, transparent 8%, #eab308 30%, #ffffff 55%, #0284c7 80%, transparent 95%)'
-              : 'linear-gradient(90deg, transparent 8%, #ffe600 30%, #ffffff 55%, #00f0ff 80%, transparent 95%)',
-            animation: 'glitch-tear-fast 0.22s infinite steps(3)',
-            opacity: 0.35 + ((saturation - 76) / 24) * 0.6,
-          }}
-        />
-      )}
-
-      {/* Slice 5 - Heavy Datamosh Midfield Block (ramps in at 84%) */}
-      {saturation >= 84 && (
-        <div
-          className="absolute inset-x-0 h-[4.5px] pointer-events-none"
-          style={{
-            top: '44%',
-            background: theme === 'light'
-              ? 'repeating-linear-gradient(90deg, #0284c7 0px, #0284c7 8px, #db2777 8px, #db2777 16px, #ffffff 16px, #ffffff 24px)'
-              : 'repeating-linear-gradient(90deg, #00f0ff 0px, #00f0ff 8px, #ff007f 8px, #ff007f 16px, #ffe600 16px, #ffe600 24px)',
-            animation: 'glitch-tear-right 0.2s infinite steps(2)',
-            opacity: 0.4 + ((saturation - 84) / 16) * 0.55,
-          }}
-        />
-      )}
-
-      {/* Slice 6 - Bottom Scanline (ramps in at 90%) */}
-      {saturation >= 90 && (
-        <div
-          className="absolute inset-x-0 h-[2px] pointer-events-none"
-          style={{
-            top: '84%',
-            background: theme === 'light'
-              ? 'linear-gradient(90deg, transparent 10%, #db2777 40%, #0284c7 80%, transparent 90%)'
-              : 'linear-gradient(90deg, transparent 10%, #ff007f 40%, #00f0ff 80%, transparent 90%)',
-            animation: 'glitch-tear-fast 0.16s infinite steps(2)',
-            opacity: 0.8,
-          }}
-        />
-      )}
-    </div>
-  );
+// ---------- Look ----------
+const THEMES = {
+  dark: {
+    bgInner: '#0f1830',
+    bgOuter: '#04060d',
+    line: '#4fb4ff',
+    label: '#9fd2ff',
+    text: '#f6f8fc',
+    halo: 'rgba(4,6,14,0.85)',
+    blend: 'screen' as const,
+    glowLines: true,
+    bloom: 1,
+    chip: 'bg-slate-950/80 border-slate-800 text-slate-200',
+  },
+  light: {
+    bgInner: '#f8fafd',
+    bgOuter: '#dde5f1',
+    line: '#2b5cb8',
+    label: '#1e3a8a',
+    text: '#0f172a',
+    halo: 'rgba(255,255,255,0.92)',
+    blend: 'normal' as const,
+    glowLines: false,
+    bloom: 0.55,
+    chip: 'bg-white/90 border-slate-200 text-slate-800 shadow-sm',
+  },
 };
 
-export const Stage3D: React.FC<Stage3DProps> = ({
+const VIEW_HINT: Record<ViewMode, string> = {
+  front: 'Front view · drag to set pan & frequency',
+  top: "Bird's-eye view · drag to set pan & depth (volume)",
+  '3d': '3D view · look only — move sounds in Front or Bird’s-eye',
+};
+
+// ---------- Small helpers ----------
+const hex = (h: string) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
+  const v = m ? m[1] : '888888';
+  return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
+};
+const mix = (h: string, to: string, amt: number) => {
+  const a = hex(h);
+  const b = hex(to);
+  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * amt)).join(',')})`;
+};
+const seeded = (seed: number) => {
+  const x = Math.sin(seed * 9301 + 49297) * 233280;
+  return x - Math.floor(x);
+};
+const hashId = (id: string) => {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return Math.abs(h) % 10000;
+};
+
+/** Ellipse outline as a path; `fuzz` adds the fine wavy edge used for saturation. */
+function bodyPath(cx: number, cy: number, rx: number, ry: number, fuzz: number) {
+  const n = Math.max(60, Math.min(180, Math.round((rx + ry) * 1.2)));
+  const teeth = Math.round((rx + ry) / 5);
+  let d = '';
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const w = fuzz ? fuzz * (0.55 * Math.sin(t * teeth) + 0.45 * Math.sin(t * teeth * 2.3)) : 0;
+    d += `${i ? 'L' : 'M'}${(cx + Math.cos(t) * (rx + w)).toFixed(1)} ${(cy + Math.sin(t) * (ry + w)).toFixed(1)}`;
+  }
+  return d + 'Z';
+}
+
+// A tiny tile of film grain, made once, used as a pattern inside saturated sounds.
+let grainUrl: string | null = null;
+function getGrainUrl() {
+  if (grainUrl !== null) return grainUrl;
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = 96;
+    const ctx = c.getContext('2d')!;
+    const img = ctx.createImageData(96, 96);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.random() > 0.5 ? 255 : 0;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = Math.random() * 140;
+    }
+    ctx.putImageData(img, 0, 0);
+    grainUrl = c.toDataURL();
+  } catch {
+    grainUrl = '';
+  }
+  return grainUrl;
+}
+
+// A single region from 0:00 to the default song length (3:30) means "plays the whole song",
+// so it stays on even when the loaded song is longer than 3:30.
+const DEFAULT_SONG_LENGTH = 210;
+const isActiveAt = (b: SoundBubble, t: number) =>
+  !b.regions ||
+  b.regions.length === 0 ||
+  (b.regions.length === 1 && b.regions[0].start <= 0 && b.regions[0].end >= DEFAULT_SONG_LENGTH - 0.5) ||
+  b.regions.some((r) => t >= r.start && t <= r.end);
+
+interface Drawn {
+  b: SoundBubble;
+  C: Vec3;
+  axes: Vec3;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  rot: number;
+  bw: number;
+  bh: number;
+  depthZ: number;
+  fade: number;
+  floor: { x: number; y: number; rx: number; ry: number; rot: number } | null;
+  drift: { x: number; y: number };
+  light: ReturnType<typeof lighting>;
+  scale: number;
+}
+
+
+/**
+ * One sound on the stage (shadow, glow, particles, shaded sphere, effects, gridlines).
+ * Memoized: while you drag one sound, the others aren't redrawn — their `d` objects are
+ * reused from the stage's cache, so React skips them.
+ */
+const SoundView = React.memo(function SoundView({
+  d,
+  dimmed,
+  theme,
+  uid,
+  grain,
+  viewMode,
+}: {
+  d: Drawn;
+  dimmed: boolean;
+  theme: ThemeMode;
+  uid: string;
+  grain: string;
+  viewMode: ViewMode;
+}) {
+  const T = THEMES[theme === 'light' ? 'light' : 'dark'];
+    const { b } = d;
+    const R = b.reverb / 100;
+    const C = b.compression / 100;
+    const S = b.saturation / 100;
+    const rim = mix(b.color, theme === 'light' ? '#000000' : '#ffffff', theme === 'light' ? 0.25 : 0.55);
+    const light = mix(b.color, '#ffffff', 0.3);
+    const fuzz = S > 0.25 ? (S - 0.25) * Math.min(d.rx, d.ry) * 0.09 : 0;
+    const path = bodyPath(d.cx, d.cy, d.rx, d.ry, fuzz);
+    const rot = `rotate(${d.rot.toFixed(2)} ${d.cx.toFixed(1)} ${d.cy.toFixed(1)})`;
+    const seed = hashId(b.id);
+    const particles = !dimmed && R > 0.05 ? Math.round(R * 40) : 0;
+    return (
+      <g key={b.id} opacity={dimmed ? 0.18 : d.fade} pointerEvents="none">
+        {/* Light effects add light in dark mode (screen); the ball itself is drawn normally
+            so its shadow side can actually be dark. */}
+        <g style={{ mixBlendMode: T.blend }}>
+        {d.floor && (
+          <>
+            <line x1={d.cx} y1={d.cy + d.bh} x2={d.floor.x} y2={d.floor.y} stroke={light} strokeOpacity={0.25} strokeDasharray="2 4" />
+            <ellipse
+              cx={d.floor.x}
+              cy={d.floor.y}
+              rx={d.floor.rx}
+              ry={Math.max(2, d.floor.ry)}
+              transform={`rotate(${d.floor.rot.toFixed(2)} ${d.floor.x.toFixed(1)} ${d.floor.y.toFixed(1)})`}
+              fill={`url(#${uid}-shadow-${b.id})`}
+            />
+          </>
+        )}
+        {/* Reverb: a glow plus a cloud of particles drifting back into the room */}
+        <ellipse
+          cx={d.cx}
+          cy={d.cy}
+          rx={d.rx * (1.35 + R * 0.55)}
+          ry={d.ry * (1.35 + R * 0.55)}
+          transform={rot}
+          fill={`url(#${uid}-bloom-${b.id})`}
+        />
+        {Array.from({ length: particles }).map((_, i) => {
+          const a = seeded(seed * 31 + i) * Math.PI * 2;
+          const dist = 1.1 + Math.pow(seeded(seed * 17 + i), 1.4) * (0.6 + R * 1.6);
+          const back = seeded(seed * 7 + i) * R;
+          const px = d.cx + Math.cos(a) * d.bw * dist + d.drift.x * back;
+          const py = d.cy + Math.sin(a) * d.bh * dist * 0.9 + d.drift.y * back;
+          return (
+            <circle
+              key={i}
+              cx={px.toFixed(1)}
+              cy={py.toFixed(1)}
+              r={((0.8 + seeded(i * 3 + seed) * 2.2) * d.scale).toFixed(2)}
+              fill={seeded(i + seed * 5) > 0.4 ? light : theme === 'light' ? b.color : '#ffffff'}
+              opacity={Math.max(0.1, 0.85 - (dist - 1) * 0.35)}
+            />
+          );
+        })}
+        </g>
+        {/* Body: a shaded sphere (see sphereShade.ts), stretched to this sound's outline */}
+        {(() => {
+          const href = sphereImage({ color: b.color, light: d.light.view, theme: theme === 'light' ? 'light' : 'dark', density: C });
+          return href ? (
+            <g transform={`translate(${d.cx.toFixed(1)} ${d.cy.toFixed(1)}) rotate(${d.rot.toFixed(2)}) scale(${d.rx.toFixed(2)} ${d.ry.toFixed(2)})`}>
+              <image href={href} x={-1} y={-1} width={2} height={2} preserveAspectRatio="none" />
+            </g>
+          ) : (
+            <path d={path} fill={`url(#${uid}-body-${b.id})`} transform={rot} />
+          );
+        })()}
+        {/* Saturation: grain inside + a warm, fuzzy edge */}
+        {S > 0.08 && grain && (
+          <rect
+            x={d.cx - d.bw - 4}
+            y={d.cy - d.bh - 4}
+            width={d.bw * 2 + 8}
+            height={d.bh * 2 + 8}
+            fill={`url(#${uid}-grain)`}
+            clipPath={`url(#${uid}-clip-${b.id})`}
+            opacity={0.06 + S * 0.22}
+          />
+        )}
+        {S > 0.3 && (
+          <>
+            <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.22} strokeWidth={4 + S * 7} />
+            <path d={path} transform={rot} fill="none" stroke={mix(b.color, '#fff1c2', 0.55)} strokeOpacity={S * 0.45} strokeWidth={1.5 + S * 2} />
+          </>
+        )}
+        {/* Gridlines on the sphere show which way it's turned */}
+        {d.light.rings.map((r, i) => (
+          <React.Fragment key={i}>
+            {r.back && <path d={r.back} fill="none" stroke={rim} strokeWidth={0.8} opacity={viewMode === 'front' ? 0.08 : 0.14} />}
+            {r.front && <path d={r.front} fill="none" stroke={rim} strokeWidth={1} opacity={viewMode === 'front' ? 0.22 : 0.4} />}
+          </React.Fragment>
+        ))}
+        {/* Compression: a firmer, brighter shell */}
+        <path
+          d={path}
+          transform={rot}
+          fill="none"
+          stroke={rim}
+          strokeWidth={(0.6 + C * 1.5) * Math.max(0.7, d.scale)}
+          strokeOpacity={theme === 'light' ? 0.2 + C * 0.45 : 0.12 + C * 0.4}
+        />
+      </g>
+    );
+});
+
+const Stage3DInner: React.FC<Stage3DProps> = ({
   bubbles,
   selectedId,
   selectedIds,
@@ -161,8 +301,6 @@ export const Stage3D: React.FC<Stage3DProps> = ({
   onUpdateBubbles,
   onDuplicateBubble,
   onDuplicateBubbles,
-  onDeleteBubble: _onDeleteBubble,
-  onDeleteBubbles: _onDeleteBubbles,
   onAddBubble,
   viewMode,
   theme,
@@ -170,508 +308,369 @@ export const Stage3D: React.FC<Stage3DProps> = ({
   readOnly = false,
   onToggleSolo,
   onToggleMute,
+  ghostBubbles,
+  showGuidance = true,
 }) => {
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
   const containerRef = useRef<HTMLDivElement>(null);
   const lastDragPos = useRef<{ clientX: number; clientY: number } | null>(null);
-  const [dimensions, setDimensions] = useState({ width: 800, height: 500 });
+  const [dims, setDims] = useState({ width: 900, height: 600 });
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const T = THEMES[theme === 'light' ? 'light' : 'dark'];
 
-  // Effective multi-selection IDs list
-  const currentSelectedIds = selectedIds && selectedIds.length > 0
-    ? selectedIds
-    : selectedId ? [selectedId] : [];
-
-  // Artistic Graph Paper Style Options: parchment or charcoal
-  const [paperStyle, setPaperStyle] = useState<GraphPaperStyle>(theme === 'light' ? 'parchment' : 'charcoal');
+  const currentSelectedIds = selectedIds && selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+  const canEdit = !readOnly && viewMode !== '3d';
 
   useEffect(() => {
-    setPaperStyle(theme === 'light' ? 'parchment' : 'charcoal');
-  }, [theme]);
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setDims({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  // Multi-bubble drag state
+  // ---------- Camera + room ----------
+  const HR = roomHeight(dims.width, dims.height);
+  const cam: Camera = useMemo(() => cameraFor(viewMode, dims.width, dims.height, HR), [viewMode, dims.width, dims.height, HR]);
+  const grid = useMemo(() => roomGrid(cam, viewMode, HR), [cam, viewMode, HR]);
+
+  // ---------- Sounds as the camera sees them ----------
+  // Results are cached per sound object, so a drag only recomputes the sound being moved.
+  const drawnCache = useRef<{ cam: Camera | null; viewMode: ViewMode | null; map: WeakMap<SoundBubble, Drawn> }>({
+    cam: null,
+    viewMode: null,
+    map: new WeakMap(),
+  });
+  const drawn: Drawn[] = useMemo(() => {
+    const cache = drawnCache.current;
+    if (cache.cam !== cam || cache.viewMode !== viewMode) {
+      cache.cam = cam;
+      cache.viewMode = viewMode;
+      cache.map = new WeakMap();
+    }
+    const sFront = cam.project([0, HR / 2, 0]).s;
+    return bubbles
+      .map((b) => {
+        const hit = cache.map.get(b);
+        if (hit) return hit;
+        const C = worldOf(b, HR);
+        const axes = axesOf(b);
+        const p = cam.project(C);
+        const body = outline(cam, C, [[axes[0], 0, 0], [0, axes[1], 0], [0, 0, axes[2]]]);
+        const fl = cam.project([C[0], 0, C[2]]);
+        const sh = outline(cam, [C[0], 0, C[2]], [[axes[0] * 0.9, 0, 0], [0, 0, axes[2] * 0.9]]);
+        const bk = cam.project([C[0], C[1], C[2] + 0.8]);
+        // Fade by depth in the mix (front = full, back wall = dimmer), not by distance from the
+        // camera — otherwise low sounds looked 'far away' in the bird's-eye view.
+        const t = Math.max(0, Math.min(1, 1 - C[2] / DR));
+        const result: Drawn = {
+          b,
+          C,
+          axes,
+          cx: p.x,
+          cy: p.y,
+          rx: body.rx,
+          ry: body.ry,
+          rot: body.rot,
+          bw: body.bw,
+          bh: body.bh,
+          depthZ: p.z,
+          fade: 0.55 + 0.45 * t,
+          floor: viewMode === 'top' ? null : { x: fl.x, y: fl.y, rx: sh.rx, ry: sh.ry, rot: sh.rot },
+          drift: { x: (bk.x - p.x) * 0.5, y: (bk.y - p.y) * 0.5 },
+          light: lighting(cam, C, axes, body, true),
+          scale: Math.min(1.1, p.s / sFront + 0.15),
+        };
+        cache.map.set(b, result);
+        return result;
+      })
+      .sort((a, b) => b.depthZ - a.depthZ); // far first, near last (on top)
+  }, [bubbles, cam, HR, viewMode]);
+
+  // Answer overlay positions (same projection as the sounds themselves)
+  const ghosts = useMemo(
+    () =>
+      (ghostBubbles || []).map((b) => {
+        const C = worldOf(b, HR);
+        const axes = axesOf(b);
+        const p = cam.project(C);
+        const body = outline(cam, C, [[axes[0], 0, 0], [0, axes[1], 0], [0, 0, axes[2]]]);
+        return { b, cx: p.x, cy: p.y, rx: body.rx, ry: body.ry, rot: body.rot };
+      }),
+    [ghostBubbles, cam, HR]
+  );
+
+  const anySolo = bubbles.some((b) => b.solo);
+  const isDimmed = (b: SoundBubble) => !isActiveAt(b, currentTime) || !!b.mute || (anySolo && !b.solo);
+
+  // ---------- Interaction state ----------
   const [dragState, setDragState] = useState<{
-    bubbleIds: string[];
+    ids: string[];
     startX: number;
     startY: number;
-    initialPositions: Record<string, { x: number; y: number; z: number; volume: number }>;
+    init: Record<string, { x: number; y: number; depth: number; map: (dx: number, dy: number) => [number, number] }>;
   } | null>(null);
-
-  // Marquee rubber-band selection state
-  const [marqueeState, setMarqueeState] = useState<{
+  const [resizeState, setResizeState] = useState<{
+    id: string;
+    handle: 'left' | 'right' | 'top' | 'bottom';
+    startX: number;
+    startY: number;
+    initW: number;
+    initH: number;
+    map: (dx: number, dy: number) => [number, number];
+  } | null>(null);
+  const [marquee, setMarquee] = useState<{
     startX: number;
     startY: number;
     currentX: number;
     currentY: number;
     isShift: boolean;
-    initialSelectedIds: string[];
+    initial: string[];
   } | null>(null);
+  const [snapDepth, setSnapDepth] = useState<number | null>(null);
 
-  const [resizeState, setResizeState] = useState<{
-    bubbleId: string;
-    handle: 'left' | 'right' | 'top' | 'bottom';
-    startX: number;
-    startY: number;
-    initialWidth: number;
-    initialHeight: number;
-  } | null>(null);
-
-  const [isCenterSnapping, setIsCenterSnapping] = useState<boolean>(false);
-
-  // Resize observer to ensure responsive stage canvas
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const updateSize = () => {
-      setDimensions({
-        width: el.clientWidth,
-        height: el.clientHeight,
-      });
-    };
-    updateSize();
-    const ro = new ResizeObserver(updateSize);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // Compute effective Z: 100% volume = 0% Z depth in mix (inversely coupled)
-  const getEffectiveZ = useCallback((b: SoundBubble): number => {
-    return Math.max(0, Math.min(100, 100 - b.volume));
-  }, []);
-
-  // Check if bubble is active at currentTime according to timeline regions
-  const isBubbleActiveOnTimeline = useCallback(
-    (b: SoundBubble): boolean => {
-      if (!b.regions || b.regions.length === 0) return true;
-      return b.regions.some((r) => currentTime >= r.start && currentTime <= r.end);
-    },
-    [currentTime]
-  );
-
-  const anySolo = bubbles.some((b) => b.solo);
-
-  // Convert logical coordinates (-100 to 100 for X, 0 to 100 for Y/Z) to screen px
-  const getScreenCoords = useCallback(
-    (b: SoundBubble) => {
-      const padX = 85;
-      const padY = 65;
-      const usableW = Math.max(200, dimensions.width - padX * 2);
-      const usableH = Math.max(200, dimensions.height - padY * 2);
-
-      const effZ = getEffectiveZ(b);
-
-      if (viewMode === 'front') {
-        // Front View: X = Pan (-64 to 64), Y = Frequency (0 to 100, 0 is bottom)
-        const screenX = padX + ((b.x + 64) / 128) * usableW;
-        const screenY = dimensions.height - padY - (b.y / 100) * usableH;
-        // Z gives depth scale (near Z=0 is larger scale 1.15, far Z=100 is smaller scale 0.75)
-        const depthScale = 1.15 - (effZ / 100) * 0.4;
-        const blur = (effZ / 100) * 1.5; // subtle depth blur
-        const depthOpacity = 1 - (effZ / 100) * 0.25;
-        return { x: screenX, y: screenY, scale: depthScale, blur, depthOpacity, z: effZ };
-      } else if (viewMode === 'top') {
-        // Top View: X = Pan (-64 to 64), Y axis represents non-linear Z (0 Bottom/Foreground to 100 Top/Background)
-        const screenX = padX + ((b.x + 64) / 128) * usableW;
-        const visualZ = Math.sqrt(Math.max(0, Math.min(100, effZ)) / 100) * 100;
-        const screenY = dimensions.height - padY - (visualZ / 100) * usableH;
-        return { x: screenX, y: screenY, scale: 0.95 + (b.volume / 100) * 0.2, blur: 0, depthOpacity: 1, z: effZ };
-      } else {
-        // 3D Stage Projection View:
-        const normalizedX = b.x / 64; // -1 to 1
-        const normalizedY = b.y / 100; // 0 to 1
-        const normalizedZ = effZ / 100; // 0 (near) to 1 (far)
-
-        const centerX = dimensions.width / 2;
-        const groundY = dimensions.height * 0.72;
-
-        const perspectiveFactor = 1 - normalizedZ * 0.42;
-        const roomWidth = usableW * 0.9 * perspectiveFactor;
-        const screenX = centerX + normalizedX * (roomWidth / 2);
-
-        const floorBaseline = groundY - normalizedZ * (usableH * 0.45);
-        const elevation = normalizedY * (usableH * 0.48) * perspectiveFactor;
-        const screenY = floorBaseline - elevation;
-        const depthScale = (1.25 - normalizedZ * 0.55);
-
-        return { x: screenX, y: screenY, scale: depthScale, blur: normalizedZ * 1.5, depthOpacity: 1 - normalizedZ * 0.2, z: effZ };
-      }
-    },
-    [dimensions, viewMode, getEffectiveZ]
-  );
-
-  // Pointer drag handlers for bubbles (supports single and multi-selection dragging)
-  const handlePointerDown = (e: React.PointerEvent, bubble: SoundBubble) => {
-    if (readOnly || (viewMode !== 'front' && viewMode !== 'top')) {
-      if (e.shiftKey) {
-        onSelectBubble(bubble.id, true);
-      } else {
-        onSelectBubble(bubble.id, false);
-      }
-      return;
-    }
-
+  const handleBubblePointerDown = (e: React.PointerEvent, b: SoundBubble) => {
     e.stopPropagation();
-
-    // Alt key duplicates
+    if (!canEdit) {
+      onSelectBubble(b.id, e.shiftKey);
+      return;
+    }
     if (e.altKey) {
-      if (currentSelectedIds.includes(bubble.id) && currentSelectedIds.length > 1) {
-        if (onDuplicateBubbles) {
-          onDuplicateBubbles(currentSelectedIds);
-        } else {
-          currentSelectedIds.forEach((id) => onDuplicateBubble(id));
-        }
+      if (currentSelectedIds.includes(b.id) && currentSelectedIds.length > 1) {
+        if (onDuplicateBubbles) onDuplicateBubbles(currentSelectedIds);
+        else currentSelectedIds.forEach((id) => onDuplicateBubble(id));
       } else {
-        onDuplicateBubble(bubble.id);
+        onDuplicateBubble(b.id);
       }
       return;
     }
-
-    // Determine target selection
-    let activeIds: string[];
+    let ids: string[];
     if (e.shiftKey) {
-      // Toggle this bubble in selection
-      if (currentSelectedIds.includes(bubble.id)) {
-        activeIds = currentSelectedIds.filter((id) => id !== bubble.id);
-      } else {
-        activeIds = [...currentSelectedIds, bubble.id];
-      }
-      if (onSelectMultiple) {
-        onSelectMultiple(activeIds);
-      } else {
-        onSelectBubble(bubble.id, true);
-      }
+      ids = currentSelectedIds.includes(b.id) ? currentSelectedIds.filter((id) => id !== b.id) : [...currentSelectedIds, b.id];
+      if (onSelectMultiple) onSelectMultiple(ids);
+      else onSelectBubble(b.id, true);
+    } else if (currentSelectedIds.includes(b.id) && currentSelectedIds.length > 1) {
+      ids = currentSelectedIds; // keep the group for a group drag
     } else {
-      // Regular click: if clicking an already-selected item among multiple, keep all selected for group drag!
-      if (currentSelectedIds.includes(bubble.id) && currentSelectedIds.length > 1) {
-        activeIds = currentSelectedIds;
-      } else {
-        activeIds = [bubble.id];
-        if (onSelectMultiple) {
-          onSelectMultiple([bubble.id]);
-        } else {
-          onSelectBubble(bubble.id, false);
-        }
-      }
+      ids = [b.id];
+      if (onSelectMultiple) onSelectMultiple(ids);
+      else onSelectBubble(b.id, false);
     }
-
-    // Prepare multi-drag positions
-    const targets = bubbles.filter((b) => activeIds.includes(b.id));
-    const initPos: Record<string, { x: number; y: number; z: number; volume: number }> = {};
-    targets.forEach((b) => {
-      initPos[b.id] = {
-        x: b.x,
-        y: b.y,
-        z: getEffectiveZ(b),
-        volume: b.volume,
-      };
-    });
-
-    setDragState({
-      bubbleIds: activeIds,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialPositions: initPos,
-    });
+    const init: Record<string, { x: number; y: number; depth: number; map: (dx: number, dy: number) => [number, number] }> = {};
+    bubbles
+      .filter((x) => ids.includes(x.id))
+      .forEach((x) => {
+        init[x.id] = {
+          x: x.x,
+          y: x.y,
+          depth: depthOf(x),
+          map: screenToWorldDelta(cam, worldOf(x, HR), 0, viewMode === 'top' ? 2 : 1),
+        };
+      });
+    setDragState({ ids, startX: e.clientX, startY: e.clientY, init });
   };
 
-  const handleResizePointerDown = (
-    e: React.PointerEvent,
-    bubble: SoundBubble,
-    handle: 'left' | 'right' | 'top' | 'bottom'
-  ) => {
-    if (readOnly || viewMode !== 'front') return;
+  const handleResizePointerDown = (e: React.PointerEvent, d: Drawn, handle: 'left' | 'right' | 'top' | 'bottom') => {
+    if (!canEdit || viewMode !== 'front') return;
     e.stopPropagation();
     setResizeState({
-      bubbleId: bubble.id,
+      id: d.b.id,
       handle,
       startX: e.clientX,
       startY: e.clientY,
-      initialWidth: bubble.width,
-      initialHeight: bubble.height,
+      initW: d.b.width,
+      initH: d.b.height,
+      map: screenToWorldDelta(cam, d.C, 0, 1),
     });
   };
 
-  // Window pointer move and up listeners
   useEffect(() => {
-    const handlePointerMove = (e: PointerEvent) => {
-      if (!dragState && !resizeState && !marqueeState) return;
-
-      const padX = 85;
-      const padY = 65;
-      const usableW = Math.max(200, dimensions.width - padX * 2);
-      const usableH = Math.max(200, dimensions.height - padY * 2);
-
-      // Multi-bubble Dragging
+    if (!dragState && !resizeState && !marquee) return;
+    const onMove = (e: PointerEvent) => {
       if (dragState) {
-        const deltaPxX = e.clientX - dragState.startX;
-        const deltaPxY = e.clientY - dragState.startY;
-
-        const deltaCoordX = (deltaPxX / usableW) * 200;
-        const deltaCoordY = -(deltaPxY / usableH) * 100;
-
-        const updatedBubbles: SoundBubble[] = [];
-        let anySnapping = false;
-
-        dragState.bubbleIds.forEach((id) => {
-          const bubble = bubbles.find((b) => b.id === id);
-          const init = dragState.initialPositions[id];
-          if (!bubble || !init) return;
-
-          let newX = Math.round(Math.max(-100, Math.min(100, init.x + deltaCoordX)));
-          // Center pan snap threshold (within 1.8 units of 0)
-          if (Math.abs(newX) <= 1.8) {
-            newX = 0;
-            anySnapping = true;
+        const dx = e.clientX - dragState.startX;
+        const dy = e.clientY - dragState.startY;
+        let snapped: number | null = null;
+        const updated: SoundBubble[] = [];
+        dragState.ids.forEach((id) => {
+          const b = bubbles.find((x) => x.id === id);
+          const init = dragState.init[id];
+          if (!b || !init) return;
+          const [dA, dB] = init.map(dx, dy);
+          let x = clampPan(init.x + (dA / PAN_WORLD) * PAN_LIMIT);
+          if (Math.abs(x) <= 1.8) {
+            x = 0;
+            snapped = depthOf(b);
           }
-
           if (viewMode === 'top') {
-            // In Top View, deltaCoordY moves along Z depth non-linearly (expanded 0-20% range)
-            const initVisualZ = Math.sqrt(Math.max(0, Math.min(100, init.z)) / 100) * 100;
-            const newVisualZ = Math.max(0, Math.min(100, initVisualZ + deltaCoordY));
-            const newZ = Math.round(Math.max(0, Math.min(100, (newVisualZ * newVisualZ) / 100)));
-            const newVol = 100 - newZ; // Inversely coupled
-            updatedBubbles.push({
-              ...bubble,
-              x: newX,
-              z: newZ,
-              volume: newVol,
-            });
+            const depth = Math.round(Math.max(0, Math.min(100, init.depth + (dB / DR) * 100)));
+            updated.push({ ...b, x, z: depth, volume: 100 - depth });
           } else {
-            // In Front view, deltaCoordY moves along Frequency Y (0 = bass, 100 = air)
-            const newY = Math.round(Math.max(0, Math.min(100, init.y + deltaCoordY)));
-            updatedBubbles.push({
-              ...bubble,
-              x: newX,
-              y: newY,
-            });
+            const y = Math.round(Math.max(0, Math.min(100, init.y + (dB / HR) * 100)));
+            updated.push({ ...b, x, y });
           }
         });
-
-        setIsCenterSnapping(anySnapping);
-
-        if (updatedBubbles.length > 0) {
-          if (onUpdateBubbles) {
-            onUpdateBubbles(updatedBubbles);
-          } else {
-            updatedBubbles.forEach((b) => onUpdateBubble(b));
-          }
+        setSnapDepth(snapped);
+        if (updated.length) {
+          if (onUpdateBubbles) onUpdateBubbles(updated);
+          else updated.forEach((u) => onUpdateBubble(u));
         }
       } else if (resizeState) {
-        const bubble = bubbles.find((b) => b.id === resizeState.bubbleId);
-        if (!bubble) return;
-
-        const deltaX = e.clientX - resizeState.startX;
-        const deltaY = e.clientY - resizeState.startY;
-
-        let newW = resizeState.initialWidth;
-        let newH = resizeState.initialHeight;
-
-        // Allow stretching width up to 600px and height up to 300px
-        if (resizeState.handle === 'right') {
-          newW = Math.max(20, Math.min(600, Math.round(resizeState.initialWidth + deltaX * 1.0)));
-        } else if (resizeState.handle === 'left') {
-          newW = Math.max(20, Math.min(600, Math.round(resizeState.initialWidth - deltaX * 1.0)));
-        } else if (resizeState.handle === 'top') {
-          newH = Math.max(20, Math.min(300, Math.round(resizeState.initialHeight - deltaY * 1.0)));
-        } else if (resizeState.handle === 'bottom') {
-          newH = Math.max(20, Math.min(300, Math.round(resizeState.initialHeight + deltaY * 1.0)));
-        }
-
+        const b = bubbles.find((x) => x.id === resizeState.id);
+        if (!b) return;
+        const [dX, dY] = resizeState.map(e.clientX - resizeState.startX, e.clientY - resizeState.startY);
+        let w = resizeState.initW;
+        let h = resizeState.initH;
+        if (resizeState.handle === 'right') w += dX * 1000;
+        if (resizeState.handle === 'left') w -= dX * 1000;
+        if (resizeState.handle === 'top') h += dY * 1000;
+        if (resizeState.handle === 'bottom') h -= dY * 1000;
         onUpdateBubble({
-          ...bubble,
-          width: newW,
-          height: newH,
+          ...b,
+          width: Math.round(Math.max(20, Math.min(600, w))),
+          height: Math.round(Math.max(20, Math.min(300, h))),
         });
-      } else if (marqueeState && containerRef.current) {
-        const curX = e.clientX;
-        const curY = e.clientY;
-        setMarqueeState((prev) => (prev ? { ...prev, currentX: curX, currentY: curY } : null));
-
-        const dist = Math.hypot(curX - marqueeState.startX, curY - marqueeState.startY);
-        if (dist > 5) {
+      } else if (marquee && containerRef.current) {
+        setMarquee((m) => (m ? { ...m, currentX: e.clientX, currentY: e.clientY } : null));
+        if (Math.hypot(e.clientX - marquee.startX, e.clientY - marquee.startY) > 5) {
           const rect = containerRef.current.getBoundingClientRect();
-          const mLeft = Math.min(marqueeState.startX, curX) - rect.left;
-          const mTop = Math.min(marqueeState.startY, curY) - rect.top;
-          const mWidth = Math.abs(curX - marqueeState.startX);
-          const mHeight = Math.abs(curY - marqueeState.startY);
-
-          const newlySelectedIds: string[] = [];
-
-          bubbles.forEach((bubble) => {
-            const coords = getScreenCoords(bubble);
-            const volFactor = 0.5 + (bubble.volume / 100) * 0.5;
-            const perspectiveMult = viewMode === 'front' ? 1 : coords.scale;
-            const bubbleW = Math.min(600, Math.max(20, bubble.width * volFactor * perspectiveMult));
-            const bubbleH = Math.min(300, Math.max(20, bubble.height * volFactor * perspectiveMult));
-
-            const bLeft = coords.x - bubbleW / 2;
-            const bRight = coords.x + bubbleW / 2;
-            const bTop = coords.y - bubbleH / 2;
-            const bBottom = coords.y + bubbleH / 2;
-
-            const isIntersecting = !(
-              bRight < mLeft ||
-              bLeft > mLeft + mWidth ||
-              bBottom < mTop ||
-              bTop > mTop + mHeight
-            );
-
-            if (isIntersecting) {
-              newlySelectedIds.push(bubble.id);
-            }
-          });
-
-          const combined = marqueeState.isShift
-            ? Array.from(new Set([...marqueeState.initialSelectedIds, ...newlySelectedIds]))
-            : newlySelectedIds;
-
-          if (onSelectMultiple) {
-            onSelectMultiple(combined);
-          } else if (combined.length > 0) {
-            onSelectBubble(combined[0]);
-          }
+          const l = Math.min(marquee.startX, e.clientX) - rect.left;
+          const t = Math.min(marquee.startY, e.clientY) - rect.top;
+          const r = l + Math.abs(e.clientX - marquee.startX);
+          const btm = t + Math.abs(e.clientY - marquee.startY);
+          const hit = drawn
+            .filter((d) => !(d.cx + d.bw < l || d.cx - d.bw > r || d.cy + d.bh < t || d.cy - d.bh > btm))
+            .map((d) => d.b.id);
+          const combined = marquee.isShift ? Array.from(new Set([...marquee.initial, ...hit])) : hit;
+          if (onSelectMultiple) onSelectMultiple(combined);
+          else if (combined.length) onSelectBubble(combined[0]);
         }
       }
     };
-
-    const handlePointerUp = () => {
-      if (marqueeState) {
-        const dist = Math.hypot(
-          marqueeState.currentX - marqueeState.startX,
-          marqueeState.currentY - marqueeState.startY
-        );
-        if (dist <= 5) {
-          // User clicked on empty space without dragging -> deselect all
-          if (onSelectMultiple) {
-            onSelectMultiple([]);
-          } else {
-            onSelectBubble(null);
-          }
-        }
-        setMarqueeState(null);
+    const onUp = () => {
+      if (marquee && Math.hypot(marquee.currentX - marquee.startX, marquee.currentY - marquee.startY) <= 5) {
+        if (onSelectMultiple) onSelectMultiple([]);
+        else onSelectBubble(null);
       }
+      setMarquee(null);
       setDragState(null);
       setResizeState(null);
-      setIsCenterSnapping(false);
+      setSnapDepth(null);
     };
-
-    if (dragState || resizeState || marqueeState) {
-      window.addEventListener('pointermove', handlePointerMove);
-      window.addEventListener('pointerup', handlePointerUp);
-    }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
     return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
     };
-  }, [
-    dragState,
-    resizeState,
-    marqueeState,
-    bubbles,
-    dimensions,
-    onUpdateBubble,
-    onUpdateBubbles,
-    onSelectMultiple,
-    onSelectBubble,
-    getScreenCoords,
-    viewMode,
-  ]);
-
-  // Graph paper theme variables
-  const getPaperStyles = () => {
-    switch (paperStyle) {
-      case 'charcoal':
-        return {
-          bg: 'bg-[#13161c]',
-          textColor: 'text-amber-100/90',
-          subtextColor: 'text-amber-300/60',
-          minorStroke: 'rgba(245, 158, 11, 0.07)',
-          mediumStroke: 'rgba(245, 158, 11, 0.16)',
-          majorStroke: 'rgba(245, 158, 11, 0.32)',
-          crossStroke: 'rgba(251, 191, 36, 0.55)',
-          centerLine: 'rgba(245, 158, 11, 0.45)',
-          rulerBg: 'bg-[#181c24]/90 border-amber-500/20 text-amber-200/70',
-        };
-      case 'parchment':
-        return {
-          bg: 'bg-[#f5f1e8]',
-          textColor: 'text-slate-900',
-          subtextColor: 'text-slate-600',
-          minorStroke: 'rgba(100, 116, 139, 0.14)',
-          mediumStroke: 'rgba(71, 85, 105, 0.26)',
-          majorStroke: 'rgba(30, 41, 59, 0.42)',
-          crossStroke: 'rgba(15, 23, 42, 0.7)',
-          centerLine: 'rgba(15, 23, 42, 0.5)',
-          rulerBg: 'bg-[#ebe5d8] border-slate-300 text-slate-700',
-        };
-      case 'blueprint':
-      default:
-        return {
-          bg: 'bg-[#0b1424]',
-          textColor: 'text-cyan-100',
-          subtextColor: 'text-cyan-300/70',
-          minorStroke: 'rgba(56, 189, 248, 0.08)',
-          mediumStroke: 'rgba(56, 189, 248, 0.20)',
-          majorStroke: 'rgba(56, 189, 248, 0.38)',
-          crossStroke: 'rgba(56, 189, 248, 0.65)',
-          centerLine: 'rgba(56, 189, 248, 0.5)',
-          rulerBg: 'bg-[#0f1b30]/90 border-cyan-500/25 text-cyan-300/70',
-        };
-    }
-  };
-
-  const currentPaper = getPaperStyles();
-
-  const handleStageDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    try {
-      const raw = e.dataTransfer.getData('application/json');
-      if (raw && onAddBubble) {
-        const item = JSON.parse(raw);
-        if (item && item.name) {
-          if (containerRef.current) {
-            const rect = containerRef.current.getBoundingClientRect();
-            const padX = 85;
-            const padY = 65;
-            const usableW = Math.max(200, rect.width - padX * 2);
-            const usableH = Math.max(200, rect.height - padY * 2);
-            const clientX = (e.clientX && e.clientX !== 0) ? e.clientX : (lastDragPos.current?.clientX || (rect.left + rect.width / 2));
-            const clientY = (e.clientY && e.clientY !== 0) ? e.clientY : (lastDragPos.current?.clientY || (rect.top + rect.height / 2));
-            const dropX = clientX - rect.left;
-            const dropY = clientY - rect.top;
-            const normX = Math.round(Math.max(-64, Math.min(64, ((dropX - padX) / usableW) * 128 - 64)));
-            const normY = Math.round(Math.max(0, Math.min(100, ((rect.height - padY - dropY) / usableH) * 100)));
-            onAddBubble({
-              ...item,
-              x: normX,
-              y: normY,
-            });
-            return;
-          }
-          onAddBubble(item);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to parse dropped instrument onto stage', err);
-    }
-  };
+  }, [dragState, resizeState, marquee, bubbles, drawn, viewMode, HR, onUpdateBubble, onUpdateBubbles, onSelectMultiple, onSelectBubble]);
 
   const handleStagePointerDown = (e: React.PointerEvent) => {
-    // Only primary mouse button (0)
     if (e.button !== 0 || readOnly) return;
-    const target = e.target as HTMLElement;
-    // Don't trigger marquee if clicking on buttons or controls
-    if (target.closest('button') || target.closest('[data-no-marquee="true"]')) {
-      return;
-    }
-
-    setMarqueeState({
+    const target = e.target as Element;
+    if (target.closest('button') || target.closest('[data-no-marquee="true"]')) return;
+    setMarquee({
       startX: e.clientX,
       startY: e.clientY,
       currentX: e.clientX,
       currentY: e.clientY,
       isShift: e.shiftKey,
-      initialSelectedIds: e.shiftKey ? currentSelectedIds : [],
+      initial: e.shiftKey ? currentSelectedIds : [],
     });
   };
+
+  // Drop an instrument from the palette where the pointer is (at its starting depth).
+  const handleStageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    try {
+      const raw = e.dataTransfer.getData('application/json');
+      if (!raw || !onAddBubble) return;
+      const item = JSON.parse(raw);
+      if (!item || !item.name) return;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect || viewMode === '3d') {
+        onAddBubble(item);
+        return;
+      }
+      const clientX = e.clientX || lastDragPos.current?.clientX || rect.left + rect.width / 2;
+      const clientY = e.clientY || lastDragPos.current?.clientY || rect.top + rect.height / 2;
+      const depth = 100 - (item.volume ?? 80);
+      const startY = typeof item.y === 'number' ? item.y : 60;
+      const anchor: Vec3 = [0, (startY / 100) * HR, (depth / 100) * DR];
+      const p0 = cam.project(anchor);
+      const map = screenToWorldDelta(cam, anchor, 0, viewMode === 'top' ? 2 : 1);
+      const [dA, dB] = map(clientX - rect.left - p0.x, clientY - rect.top - p0.y);
+      const x = clampPan((dA / PAN_WORLD) * PAN_LIMIT);
+      if (viewMode === 'top') {
+        const d = Math.round(Math.max(0, Math.min(100, depth + (dB / DR) * 100)));
+        onAddBubble({ ...item, x, y: startY, volume: 100 - d });
+      } else {
+        onAddBubble({ ...item, x, y: Math.round(Math.max(0, Math.min(100, startY + (dB / HR) * 100))) });
+      }
+    } catch (err) {
+      console.error('Failed to drop instrument onto stage', err);
+    }
+  };
+
+  // ---------- Name placement (nearest first; centered, then below, then above) ----------
+  const labelSpots = useMemo(() => {
+    const placed: { l: number; r: number; t: number; b: number }[] = [];
+    const out: Record<string, { y: number; inside: boolean }> = {};
+    [...drawn].reverse().forEach((d) => {
+      const size = 11 + d.scale * 2.2;
+      const w = d.b.name.length * size * 0.56;
+      const fitsInside = w <= d.bw * 1.75 && d.bh > size;
+      const options = [
+        ...(fitsInside ? [{ y: d.cy + size * 0.36, inside: true }] : []),
+        { y: d.cy + d.bh + size + 3, inside: false },
+        { y: d.cy - d.bh - 7, inside: false },
+        { y: d.cy + d.bh + size * 2 + 6, inside: false },
+      ];
+      let pick = options[0];
+      for (const o of options) {
+        const box = { l: d.cx - w / 2 - 3, r: d.cx + w / 2 + 3, t: o.y - size, b: o.y + 3 };
+        if (!placed.some((p) => box.l < p.r && p.l < box.r && box.t < p.b && p.t < box.b)) {
+          pick = o;
+          break;
+        }
+      }
+      placed.push({ l: d.cx - w / 2 - 3, r: d.cx + w / 2 + 3, t: pick.y - size, b: pick.y + 3 });
+      out[d.b.id] = pick;
+    });
+    return out;
+  }, [drawn]);
+
+  const grain = getGrainUrl();
+  const snapLine = useMemo(() => {
+    if (snapDepth === null) return null;
+    if (viewMode === 'top') {
+      const a = cam.project([0, 0, 0]);
+      const b = cam.project([0, 0, DR]);
+      return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    }
+    const z = (snapDepth / 100) * DR;
+    const a = cam.project([0, 0, z]);
+    const b = cam.project([0, HR, z]);
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  }, [snapDepth, cam, viewMode, HR]);
+
+  const marqueeBox =
+    marquee && containerRef.current && Math.hypot(marquee.currentX - marquee.startX, marquee.currentY - marquee.startY) > 5
+      ? (() => {
+          const rect = containerRef.current!.getBoundingClientRect();
+          return {
+            left: Math.min(marquee.startX, marquee.currentX) - rect.left,
+            top: Math.min(marquee.startY, marquee.currentY) - rect.top,
+            width: Math.abs(marquee.currentX - marquee.startX),
+            height: Math.abs(marquee.currentY - marquee.startY),
+          };
+        })()
+      : null;
+
+  const singleSelected =
+    canEdit && viewMode === 'front' && currentSelectedIds.length === 1 ? drawn.find((d) => d.b.id === currentSelectedIds[0]) : undefined;
 
   return (
     <div
@@ -683,591 +682,338 @@ export const Stage3D: React.FC<Stage3DProps> = ({
         lastDragPos.current = { clientX: e.clientX, clientY: e.clientY };
       }}
       onDrop={handleStageDrop}
-      className={`relative w-full h-full overflow-hidden flex flex-col justify-between transition-colors select-none ${currentPaper.bg} ${currentPaper.textColor}`}
+      className="relative w-full h-full overflow-hidden select-none"
+      style={{ background: `radial-gradient(ellipse at 50% 44%, ${T.bgInner} 0%, ${T.bgOuter} 75%)` }}
     >
-      {/* SVG Definitions for Graph Paper Patterns, Distortion Shaders & Glow */}
-      <svg className="absolute w-0 h-0 pointer-events-none" aria-hidden="true">
+      <svg
+        width={dims.width}
+        height={dims.height}
+        className="absolute inset-0"
+        style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}
+      >
         <defs>
-          {/* Dynamic Per-Bubble Filters for Spikey TV Static Glitch and Fluid Water Reverb */}
-          {bubbles.map((b) => {
-            // Intensified distortion static glitch displacement (non-linear curve for severe high levels)
-            const satVal = b.saturation / 100;
-            const satScale = Math.round(Math.pow(satVal, 1.5) * 260);
-            const spikeNoiseScale = Math.round(Math.pow(satVal, 1.5) * 130);
-            // Reverb water displacement & blur reduced by 25%
-            const waterScale = Math.round((b.reverb / 100) * 24);
-            const waterBlur = Number(((b.reverb / 100) * 2.85).toFixed(1));
-
+          <radialGradient id={`${uid}-glint`}>
+            <stop offset="0%" stopColor="#fff" stopOpacity={0.75} />
+            <stop offset="100%" stopColor="#fff" stopOpacity={0} />
+          </radialGradient>
+          {grain && (
+            <pattern id={`${uid}-grain`} width="96" height="96" patternUnits="userSpaceOnUse">
+              <image href={grain} width="96" height="96" />
+            </pattern>
+          )}
+          {drawn.map((d) => {
+            const { b } = d;
+            const C = b.compression / 100;
+            const S = b.saturation / 100;
+            const hot = mix(b.color, '#ffffff', 0.45 + S * 0.3);
+            const rim = mix(b.color, '#ffffff', 0.55);
             return (
               <React.Fragment key={b.id}>
-                {/* 1. Spikey TV Static Glitch Distortion Filter with wide boundary */}
-                <filter id={`tv-static-filter-${b.id}`} x="-120%" y="-120%" width="340%" height="340%">
-                  <feTurbulence type="fractalNoise" baseFrequency="0.65 0.018" numOctaves="4" result="scanGlitch" />
-                  <feTurbulence type="turbulence" baseFrequency="0.95 0.95" numOctaves="4" result="needleGrain" />
-                  <feDisplacementMap in="SourceGraphic" in2="scanGlitch" scale={satScale} xChannelSelector="R" yChannelSelector="G" result="tornGraphic" />
-                  <feDisplacementMap in="tornGraphic" in2="needleGrain" scale={spikeNoiseScale} xChannelSelector="B" yChannelSelector="R" result="spikyResult" />
-                </filter>
-
-                {/* 2. Fluid Water Reverb Liquid Wave & Blur Filter (reduced 25%) */}
-                <filter id={`water-liquid-filter-${b.id}`} x="-40%" y="-40%" width="180%" height="180%">
-                  <feTurbulence type="fractalNoise" baseFrequency="0.038 0.045" numOctaves="3" result="waterRipples" />
-                  <feDisplacementMap in="SourceGraphic" in2="waterRipples" scale={waterScale} xChannelSelector="R" yChannelSelector="B" result="rippledBody" />
-                  <feGaussianBlur in="rippledBody" stdDeviation={waterBlur} result="waterBlurred" />
-                </filter>
-
-                {/* 3. Combined Spikey TV Static + Fluid Water Reverb Filter */}
-                <filter id={`combined-filter-${b.id}`} x="-120%" y="-120%" width="340%" height="340%">
-                  <feTurbulence type="fractalNoise" baseFrequency="0.65 0.018" numOctaves="4" result="scanGlitch" />
-                  <feTurbulence type="turbulence" baseFrequency="0.95 0.95" numOctaves="4" result="needleGrain" />
-                  <feDisplacementMap in="SourceGraphic" in2="scanGlitch" scale={satScale} xChannelSelector="R" yChannelSelector="G" result="tornGraphic" />
-                  <feDisplacementMap in="tornGraphic" in2="needleGrain" scale={spikeNoiseScale} xChannelSelector="B" yChannelSelector="R" result="spikyResult" />
-                  <feTurbulence type="fractalNoise" baseFrequency="0.038 0.045" numOctaves="3" result="waterRipples" />
-                  <feDisplacementMap in="spikyResult" in2="waterRipples" scale={waterScale} xChannelSelector="R" yChannelSelector="B" result="rippledBody" />
-                  <feGaussianBlur in="rippledBody" stdDeviation={waterBlur} result="finalRender" />
-                </filter>
+                {/* Body: lit from the front; color holds most of the way out, then a thin dark edge. */}
+                <radialGradient
+                  id={`${uid}-body-${b.id}`}
+                  cx="50%"
+                  cy="50%"
+                  r="50%"
+                  fx={`${(d.light.fx * 100).toFixed(1)}%`}
+                  fy={`${(d.light.fy * 100).toFixed(1)}%`}
+                >
+                  <stop offset="0%" stopColor={hot} stopOpacity={0.66 + C * 0.24} />
+                  <stop offset="45%" stopColor={b.color} stopOpacity={0.55 + C * 0.3} />
+                  <stop offset="78%" stopColor={mix(b.color, '#000000', 0.12)} stopOpacity={0.55 + C * 0.3} />
+                  <stop offset="93%" stopColor={mix(b.color, '#000000', 0.62)} stopOpacity={0.62 + C * 0.3} />
+                  <stop offset="100%" stopColor={rim} stopOpacity={0.7 + C * 0.3} />
+                </radialGradient>
+                <radialGradient id={`${uid}-bloom-${b.id}`}>
+                  <stop offset="35%" stopColor={b.color} stopOpacity={(0.34 + (b.reverb / 100) * 0.26) * T.bloom} />
+                  <stop offset="100%" stopColor={b.color} stopOpacity={0} />
+                </radialGradient>
+                <radialGradient id={`${uid}-shadow-${b.id}`}>
+                  <stop offset="0%" stopColor={b.color} stopOpacity={theme === 'light' ? 0.35 : 0.55} />
+                  <stop offset="100%" stopColor={b.color} stopOpacity={0} />
+                </radialGradient>
+                {S > 0.08 && (
+                  <clipPath id={`${uid}-clip-${b.id}`}>
+                    <ellipse cx={d.cx} cy={d.cy} rx={d.rx} ry={d.ry} transform={`rotate(${d.rot} ${d.cx} ${d.cy})`} />
+                  </clipPath>
+                )}
               </React.Fragment>
             );
           })}
-
-          {/* Authentic Millimeter Graph Paper Grid Pattern */}
-          <pattern id="graph-small-grid" width="10" height="10" patternUnits="userSpaceOnUse">
-            <path d="M 10 0 L 0 0 0 10" fill="none" stroke={currentPaper.minorStroke} strokeWidth="0.5" />
-          </pattern>
-          <pattern id="graph-medium-grid" width="50" height="50" patternUnits="userSpaceOnUse">
-            <rect width="50" height="50" fill="url(#graph-small-grid)" />
-            <path d="M 50 0 L 0 0 0 50" fill="none" stroke={currentPaper.mediumStroke} strokeWidth="0.8" />
-          </pattern>
-          <pattern id="graph-major-grid" width="100" height="100" patternUnits="userSpaceOnUse">
-            <rect width="100" height="100" fill="url(#graph-medium-grid)" />
-            <path d="M 100 0 L 0 0 0 100" fill="none" stroke={currentPaper.majorStroke} strokeWidth="1.2" />
-            {/* Corner Crosshair Marks (+) */}
-            <path d="M 0 -4 L 0 4 M -4 0 L 4 0" fill="none" stroke={currentPaper.crossStroke} strokeWidth="1" />
-          </pattern>
         </defs>
-      </svg>
 
-      {/* Stage Container Wrapper (No rotation, clean perspective) */}
-      <div
-        className="absolute inset-0 pointer-events-auto transition-transform duration-700 ease-out overflow-hidden flex flex-col justify-between"
-      >
-        {/* Center Pan Snapping Indicator Line (Google Slides style vertical red alignment line) */}
-        {isCenterSnapping && (
-          <div className="absolute inset-y-0 left-1/2 w-[1.5px] bg-red-500 z-40 pointer-events-none shadow-[0_0_10px_rgba(239,68,68,0.9)] flex items-center justify-center">
-            <div className="absolute top-1/4 -translate-y-1/2 px-1.5 py-0.5 bg-red-600 text-white text-[9px] font-mono rounded shadow-md tracking-wider uppercase whitespace-nowrap ring-1 ring-white/40">
-              Center Pan (0)
-            </div>
-          </div>
+        {/* The room */}
+        <g pointerEvents="none">
+          {grid.polys.map((p, i) => (
+            <polygon key={i} points={p.points} fill={T.line} opacity={p.o} />
+          ))}
+          {T.glowLines &&
+            grid.lines.map((l, i) => (
+              <line key={`g${i}`} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke={T.line} strokeOpacity={l.o * 0.22} strokeWidth={l.w * 4} />
+            ))}
+          {grid.lines.map((l, i) => (
+            <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke={T.line} strokeOpacity={l.o} strokeWidth={l.w} />
+          ))}
+          {grid.labels.map((l, i) => (
+            <text key={i} x={l.x} y={l.y} textAnchor={l.anchor} fontSize={l.size} fontWeight={l.weight} fill={T.label} fillOpacity={l.o}>
+              {l.text}
+            </text>
+          ))}
+        </g>
+
+        {snapLine && <line {...snapLine} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="4 3" pointerEvents="none" />}
+
+        {/* Sounds, far to near */}
+        {drawn.map((d) => (
+          <SoundView key={d.b.id} d={d} dimmed={isDimmed(d.b)} theme={theme} uid={uid} grain={grain} viewMode={viewMode} />
+        ))}
+
+        {/* Selection outlines */}
+        {drawn
+          .filter((d) => currentSelectedIds.includes(d.b.id))
+          .map((d) => (
+            <ellipse
+              key={`sel-${d.b.id}`}
+              cx={d.cx}
+              cy={d.cy}
+              rx={d.rx + 7}
+              ry={d.ry + 7}
+              transform={`rotate(${d.rot} ${d.cx} ${d.cy})`}
+              fill="none"
+              stroke={theme === 'light' ? '#4f46e5' : '#a5b4fc'}
+              strokeWidth={1.6}
+              strokeDasharray="5 4"
+              pointerEvents="none"
+            />
+          ))}
+
+        {/* Hit areas (nearest on top) */}
+        {drawn.map((d) => (
+          <ellipse
+            key={`hit-${d.b.id}`}
+            id={`bubble-node-${d.b.id}`}
+            cx={d.cx}
+            cy={d.cy}
+            rx={Math.max(10, d.rx)}
+            ry={Math.max(10, d.ry)}
+            transform={`rotate(${d.rot} ${d.cx} ${d.cy})`}
+            fill="transparent"
+            pointerEvents="all"
+            style={{ cursor: canEdit ? (dragState ? 'grabbing' : 'grab') : 'pointer' }}
+            onPointerDown={(e) => handleBubblePointerDown(e, d.b)}
+            onClick={(e) => e.stopPropagation()}
+            onPointerEnter={() => setHoverId(d.b.id)}
+            onPointerLeave={() => setHoverId((h) => (h === d.b.id ? null : h))}
+          />
+        ))}
+
+        {/* Answer overlay: dashed outline where each sound sits in the song, linked to the student's sound */}
+        {ghosts.length > 0 && (
+          <g pointerEvents="none">
+            {ghosts.map((g) => {
+              const mine = drawn.find((d) => d.b.id === g.b.id);
+              return (
+                <g key={`ghost-${g.b.id}`}>
+                  {mine && (
+                    <line
+                      x1={mine.cx}
+                      y1={mine.cy}
+                      x2={g.cx}
+                      y2={g.cy}
+                      stroke={g.b.color}
+                      strokeWidth={1.6}
+                      strokeDasharray="3 4"
+                      opacity={0.9}
+                    />
+                  )}
+                  <ellipse
+                    cx={g.cx}
+                    cy={g.cy}
+                    rx={Math.max(8, g.rx)}
+                    ry={Math.max(8, g.ry)}
+                    transform={`rotate(${g.rot} ${g.cx} ${g.cy})`}
+                    fill={g.b.color}
+                    fillOpacity={0.1}
+                    stroke={g.b.color}
+                    strokeWidth={2}
+                    strokeDasharray="7 5"
+                  />
+                  <circle cx={g.cx} cy={g.cy} r={3.5} fill={g.b.color} />
+                </g>
+              );
+            })}
+          </g>
         )}
 
-        {/* 2. Perspective Layout Overlay & Drafting Measurements */}
-        <div className="absolute inset-0 pointer-events-none">
-          {viewMode === 'front' && (
-            <div className="w-full h-full relative">
-              {/* Center Axis Guideline */}
-              <div
-                className="absolute left-1/2 top-0 bottom-0 w-px"
-                style={{
-                  backgroundColor: currentPaper.centerLine,
-                  borderLeft: `1px dashed ${currentPaper.centerLine}`,
-                }}
-              />
-
-              {/* Horizontal Frequency Architectural Guide Lines */}
-              <div className="absolute inset-x-0 top-0 bottom-0 flex flex-col justify-between p-8 pointer-events-none opacity-30">
-                <div className="border-b border-current pb-0.5 text-[10px] font-mono tracking-widest uppercase">
-                  12kHz - 20kHz [ AIR & METALLIC SPARKLE ]
-                </div>
-                <div className="border-b border-current pb-0.5 text-[10px] font-mono tracking-widest uppercase">
-                  4kHz - 8kHz [ PRESENCE & TRANSIENT BITE ]
-                </div>
-                <div className="border-b border-current pb-0.5 text-[10px] font-mono tracking-widest uppercase">
-                  800Hz - 2.5kHz [ CRITICAL MIDRANGE HARMONICS ]
-                </div>
-                <div className="border-b border-current pb-0.5 text-[10px] font-mono tracking-widest uppercase">
-                  150Hz - 400Hz [ WARMTH & LOWER MID BODY ]
-                </div>
-                <div className="border-b border-current pb-0.5 text-[10px] font-mono tracking-widest uppercase">
-                  20Hz - 80Hz [ SUB-BASS & CHEST THUMP ]
-                </div>
-              </div>
-
-
-
-              {/* Bottom Horizontal Stereo Panning Scale Ruler */}
-              <div className="absolute inset-x-16 bottom-2 flex justify-between text-[9px] font-mono opacity-55 pointer-events-none">
-                <span>-64 (HARD L)</span>
-                <span>-32</span>
-                <span className="font-bold underline">0 (CENTER)</span>
-                <span>+32</span>
-                <span>+64 (HARD R)</span>
-              </div>
-            </div>
-          )}
-
-          {viewMode === 'top' && (
-            <div className="w-full h-full relative p-8">
-              <div className="absolute inset-0 flex flex-col justify-between p-8 opacity-30">
-                <div className="border-b border-current pb-1 text-[11px] font-mono tracking-wider">
-                  BACKGROUND (Z = 100): Pads, Ambience, Reverbs
-                </div>
-                <div className="border-b border-current pb-1 text-[11px] font-mono tracking-wider">
-                  MIDGROUND (Z = 50): Rhythm Guitars, Keyboards, Strings/Horns, Other Percussion, Backing Vocals
-                </div>
-                <div className="border-b border-current pb-1 text-[11px] font-mono tracking-wider">
-                  FOREGROUND (Z = 0): Lead Vocals, Bass, Kick, Snare
-                </div>
-              </div>
-              {/* Center Stage axis */}
-              <div
-                className="absolute left-1/2 top-0 bottom-0 w-px"
-                style={{ backgroundColor: currentPaper.centerLine }}
-              />
-            </div>
-          )}
-
-        </div>
-
-        {/* Spacer for Stage Control Bar */}
-        <div className="relative z-10 px-5 pt-3 flex items-center justify-between text-xs font-mono pointer-events-auto">
-          <div className="flex items-center gap-3">
-            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border backdrop-blur ${
-              theme === 'light' ? 'bg-white/90 border-slate-200 text-slate-800 shadow-sm' : 'bg-slate-950/80 border-slate-800 text-slate-200'
-            }`}>
-              {viewMode === 'front' ? (
-                <StudioMonitorsIcon className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-              ) : (
-                <PaperAirplaneIcon className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-              )}
-              <span className="font-semibold">
-                {viewMode === 'front'
-                  ? 'Front View (EQ+Pan)'
-                  : "Bird's Eye View (Depth+Pan)"}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* 4. Interactive Sound Bubbles Container */}
-        <div className="relative flex-1 w-full h-full overflow-hidden pointer-events-auto">
-        {bubbles.map((bubble) => {
-          const isSelected = currentSelectedIds.includes(bubble.id);
-          const isMoving = dragState?.bubbleIds.includes(bubble.id);
-          const { x, y, scale, blur, depthOpacity, z } = getScreenCoords(bubble);
-
-          const isActiveOnTimeline = isBubbleActiveOnTimeline(bubble);
-          const isMuted = bubble.mute;
-          const isDimmed = !isActiveOnTimeline || isMuted || (anySolo && !bubble.solo);
-          const freqGuidance = getFrequencyAssessment(bubble);
-
-          // Physical dimensions & Volume scaling:
-          // Default size of newly added instrument is 90px wide by 70px tall.
-          // 100% volume level/size standard is 240px wide by 200px tall (0% Z Foreground).
-          // Max physical dimension is 600px wide and 300px tall.
-          const volFactor = 0.5 + (bubble.volume / 100) * 0.5;
-          const perspectiveMult = viewMode === 'front' ? 1 : scale;
-          const bubbleW = Math.min(600, Math.max(20, bubble.width * volFactor * perspectiveMult));
-          const saturationStretch = 1 + (bubble.saturation / 100) * 0.25;
-          const bubbleH = Math.min(300, Math.max(20, bubble.height * volFactor * perspectiveMult * saturationStretch));
-
-          // Reverb atmospheric blooms (tuned 25% less dramatic)
-          const haloSpread = (bubble.reverb / 100) * 64 * perspectiveMult;
-          const outerHaloSpread = (bubble.reverb / 100) * 112 * perspectiveMult;
-
-          // Compression ring thickness: at 0% compression, NO outline around the bubble.
-          // As compression increases, the boundary solidifies into a firm bounding ceiling (1px to 4px).
-          const compressionBorder = bubble.compression <= 0 ? 0 : Math.max(1, Math.round((bubble.compression / 100) * 4));
-          const coreOpacity = 0.35 + (bubble.compression / 100) * 0.22;
-
-          // Dynamic Filters: Spikey TV Static Glitch & Fluid Water Reverb
-          const hasDistortion = bubble.saturation > 5;
-          const hasReverb = bubble.reverb > 5;
-          let bodyFilter: string | undefined = undefined;
-          if (hasDistortion && hasReverb) {
-            bodyFilter = `url(#combined-filter-${bubble.id})`;
-          } else if (hasDistortion) {
-            bodyFilter = `url(#tv-static-filter-${bubble.id})`;
-          } else if (hasReverb) {
-            bodyFilter = `url(#water-liquid-filter-${bubble.id})`;
-          }
-
-          return (
-            <div
-              key={bubble.id}
-              id={`bubble-node-${bubble.id}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (e.shiftKey) {
-                  onSelectBubble(bubble.id, true);
-                } else {
-                  onSelectBubble(bubble.id, false);
-                }
-              }}
-              onPointerDown={(e) => handlePointerDown(e, bubble)}
-              style={{
-                position: 'absolute',
-                left: `${x}px`,
-                top: `${y}px`,
-                transform: 'translate(-50%, -50%)',
-                cursor: (viewMode === 'front' || viewMode === 'top') && !readOnly ? 'grab' : 'pointer',
-                opacity: isDimmed ? 0.22 : depthOpacity,
-                filter: blur > 0.5 ? `blur(${blur}px)` : undefined,
-                transition: isMoving ? 'none' : 'left 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), top 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s, transform 0.2s',
-                zIndex: isSelected ? 40 : Math.round(100 - z),
-              }}
-              className="group select-none"
+        {/* Names */}
+        <g pointerEvents="none">
+          {drawn.map((d) => (
+            <text
+              key={`lbl-${d.b.id}`}
+              x={d.cx}
+              y={labelSpots[d.b.id]?.y ?? d.cy}
+              textAnchor="middle"
+              fontSize={11 + d.scale * 2.2}
+              fontWeight={650}
+              fill={T.text}
+              opacity={isDimmed(d.b) ? 0.35 : 1}
+              stroke={T.halo}
+              strokeWidth={3.2}
+              strokeLinejoin="round"
+              paintOrder="stroke"
             >
-              {/* Reverb Multi-Layer Volumetric Glow */}
-              {bubble.reverb > 5 && (
-                <>
-                  {/* Layer 1: Wide Cavernous Atmospheric Wash */}
-                  <div
-                    className="absolute rounded-full pointer-events-none transition-all duration-300"
-                    style={{
-                      left: `${-outerHaloSpread}px`,
-                      top: `${-outerHaloSpread}px`,
-                      width: `${bubbleW + outerHaloSpread * 2}px`,
-                      height: `${bubbleH + outerHaloSpread * 2}px`,
-                      background: theme === 'light'
-                        ? `radial-gradient(circle, ${bubble.color}7c 0%, ${bubble.color}3a 45%, ${bubble.color}00 75%)`
-                        : `radial-gradient(circle, ${bubble.color}3c 0%, ${bubble.color}18 45%, ${bubble.color}00 75%)`,
-                      filter: 'blur(21px)',
-                    }}
-                  />
-                  {/* Layer 2: Radiant Inner Corona Bloom */}
-                  <div
-                    className="absolute rounded-full pointer-events-none transition-all duration-300"
-                    style={{
-                      left: `${-haloSpread}px`,
-                      top: `${-haloSpread}px`,
-                      width: `${bubbleW + haloSpread * 2}px`,
-                      height: `${bubbleH + haloSpread * 2}px`,
-                      background: theme === 'light'
-                        ? `radial-gradient(circle, ${bubble.color}aa 0%, ${bubble.color}55 40%, ${bubble.color}00 75%)`
-                        : `radial-gradient(circle, ${bubble.color}6c 0%, ${bubble.color}35 40%, ${bubble.color}00 75%)`,
-                      filter: 'blur(9px)',
-                    }}
-                  />
-                </>
-              )}
+              {d.b.name}
+            </text>
+          ))}
+        </g>
 
-              {/* Main Sphere Outer Container (NO distortion filter applied here, so handles and text stay intact) */}
-              <div
-                className={`relative rounded-full flex flex-col items-center justify-center ${
-                  isSelected
-                    ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-950/70 shadow-[0_0_24px_rgba(99,102,241,0.65)]'
-                    : 'shadow-md hover:shadow-lg'
-                }`}
-                style={{
-                  width: `${bubbleW}px`,
-                  height: `${bubbleH}px`,
-                  transition: isMoving ? 'none' : 'width 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), height 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                  boxShadow:
-                    bubble.reverb > 5
-                      ? theme === 'light'
-                        ? `0 0 ${(bubble.reverb / 100) * 32}px ${bubble.color}, 0 4px 18px rgba(15,23,42,0.3)`
-                        : `0 0 ${(bubble.reverb / 100) * 26}px ${bubble.color}, 0 0 ${(bubble.reverb / 100) * 56}px ${bubble.color}66`
-                      : undefined,
-                }}
-              >
-                {/* 1. Filtered Inner Sphere Body: Rock-solid core body with crisp borders and zero distortion blur */}
-                <div
-                  className="absolute inset-0 rounded-full transition-all pointer-events-none overflow-hidden"
-                  style={{
-                    backgroundColor: bubble.color,
-                    opacity: 1,
-                    border: compressionBorder > 0
-                      ? `${compressionBorder}px solid ${theme === 'light' ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.9)'}`
-                      : 'none',
-                    boxShadow: theme === 'light'
-                      ? `inset 0 0 20px rgba(0,0,0,0.35), 0 6px 20px -4px rgba(15,23,42,0.25)`
-                      : `inset 0 0 20px rgba(0,0,0,0.45), 0 6px 20px -4px ${bubble.color}66`,
+        {/* Badges: frequency guidance, notes, solo / mute */}
+        {drawn.map((d) => {
+          const { b } = d;
+          const guidance = showGuidance ? getFrequencyAssessment(b) : null;
+          const showSM =
+            !!(onToggleSolo || onToggleMute) && (hoverId === b.id || currentSelectedIds.includes(b.id) || !!b.solo || !!b.mute);
+          const spot = labelSpots[b.id];
+          const smY = spot && !spot.inside ? spot.y + 6 : d.cy + d.bh + 4;
+          return (
+            <g key={`badge-${b.id}`} data-no-marquee="true">
+              {guidance && (
+                <g
+                  transform={`translate(${(d.cx - d.bw * 0.72).toFixed(1)} ${(d.cy - d.bh * 0.72).toFixed(1)})`}
+                  style={{ cursor: 'help' }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onSelectBubble(b.id, false);
                   }}
                 >
-                  {/* Internal Light Sheen (crisp core sheen) */}
-                  <div
-                    className="absolute inset-0 rounded-full pointer-events-none"
-                    style={{
-                      background:
-                        'radial-gradient(ellipse at 35% 25%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.12) 42%, rgba(0,0,0,0.25) 100%)',
-                    }}
-                  />
-
-                  {/* TV Static CRT Scanlines & Grain Texture */}
-                  {bubble.saturation > 6 && (
-                    <div
-                      className="absolute inset-0 rounded-full pointer-events-none overflow-hidden mix-blend-screen"
-                      style={{
-                        opacity: Math.min(0.85, 0.2 + (bubble.saturation / 100) * 0.65),
-                        animation: 'glitch-flicker 0.18s infinite',
-                        backgroundImage: theme === 'light'
-                          ? `
-                            repeating-linear-gradient(0deg, transparent, transparent 1.5px, rgba(15,23,42,0.55) 2.5px, transparent 3.5px),
-                            radial-gradient(circle, rgba(147,51,234,0.35) 15%, transparent 75%)
-                          `
-                          : `
-                            repeating-linear-gradient(0deg, transparent, transparent 1.5px, rgba(255,255,255,0.55) 2.5px, transparent 3.5px),
-                            radial-gradient(circle, rgba(0,240,255,0.4) 15%, transparent 75%)
-                          `,
-                        backgroundSize: '100% 3px, 100% 100%',
-                      }}
-                    />
-                  )}
-
-                  {/* Authentic TV Static Noise & Needle Grain Displacement Field */}
-                  {bubble.saturation > 10 && (
-                    <div
-                      className="absolute inset-0 rounded-full pointer-events-none overflow-hidden mix-blend-screen"
-                      style={{
-                        opacity: Math.min(0.8, 0.15 + (bubble.saturation / 100) * 0.65),
-                        filter: `url(#tv-static-filter-${bubble.id})`,
-                      }}
-                    >
-                      <div
-                        className="w-full h-full"
-                        style={{
-                          background: theme === 'light'
-                            ? `radial-gradient(ellipse at 50% 50%, rgba(15,23,42,0.6) 0%, rgba(147,51,234,0.45) 50%, rgba(2,132,199,0.3) 100%)`
-                            : `radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.7) 0%, rgba(0,240,255,0.5) 50%, rgba(255,0,128,0.35) 100%)`,
-                        }}
-                      />
-                    </div>
-                  )}
-
-                  {/* TV Static Needle Grain & Electric Fuzz Contour (strictly contained in bubble) */}
-                  {bubble.saturation > 15 && (
-                    <div
-                      className="absolute inset-1 rounded-full pointer-events-none overflow-hidden mix-blend-screen"
-                      style={{
-                        filter: `url(#tv-static-filter-${bubble.id})`,
-                        opacity: Math.min(0.85, 0.2 + (bubble.saturation / 100) * 0.65),
-                      }}
-                    >
-                      <div
-                        className={`w-full h-full rounded-full border-2 border-dashed ${
-                          theme === 'light' ? 'border-purple-600/80' : 'border-cyan-300/85'
-                        }`}
-                      />
-                    </div>
-                  )}
-                  {bubble.saturation > 45 && (
-                    <div
-                      className="absolute inset-2 rounded-full pointer-events-none overflow-hidden mix-blend-screen"
-                      style={{
-                        filter: `url(#tv-static-filter-${bubble.id})`,
-                        opacity: Math.min(0.8, 0.2 + (bubble.saturation / 100) * 0.6),
-                      }}
-                    >
-                      <div
-                        className={`w-full h-full rounded-full border border-dotted ${
-                          theme === 'light' ? 'border-fuchsia-700/80' : 'border-amber-300/80'
-                        }`}
-                      />
-                    </div>
-                  )}
-
-                  {/* CRT Vintage TV Static Snow Noise Texture */}
-                  {bubble.saturation > 20 && (
-                    <div
-                      className="absolute inset-0 rounded-full pointer-events-none overflow-hidden mix-blend-overlay"
-                      style={{
-                        opacity: Math.min(0.65, 0.12 + (bubble.saturation / 100) * 0.55),
-                        backgroundImage: `
-                          radial-gradient(circle at 50% 50%, rgba(255,255,255,0.4) 0%, transparent 60%),
-                          repeating-radial-gradient(circle at 25% 35%, rgba(255,255,255,0.2) 0px, transparent 1.5px, rgba(0,0,0,0.2) 2.5px, transparent 3.5px)
-                        `,
-                        backgroundSize: '100% 100%, 6px 6px',
-                        animation: 'glitch-flicker 0.14s infinite steps(2)',
-                      }}
-                    />
-                  )}
-                </div>
-
-                {/* Digital Glitch Tearing Bars (Starting at 60% Saturation, subtly ramping up within bubble bounds) */}
-                {bubble.saturation >= 60 && (
-                  <GlitchTearingBars
-                    saturation={bubble.saturation}
-                    theme={theme}
-                  />
-                )}
-
-                {/* 2. Bubble Label Text & Instrument Icon (Layered strictly on top of all glitch effects) */}
-                <div className="relative z-20 px-1 text-center pointer-events-none flex flex-col items-center justify-center max-w-[85%]">
-                  {bubbleH >= 70 && bubbleW >= 75 && (
-                    <div className="mb-0.5 text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] flex items-center justify-center">
-                      {getInstrumentIconComponent(bubble.category, bubble.name, "w-4 h-4")}
-                    </div>
-                  )}
-                  <span
-                    className="font-mono tracking-wider uppercase font-extrabold text-white leading-tight whitespace-normal break-words text-center px-1.5 py-0.5 select-none rounded-[3px] bg-zinc-950 border border-zinc-700/90 shadow-[0_2px_6px_rgba(0,0,0,0.85),inset_0_1px_0_rgba(255,255,255,0.25)]"
-                    style={{
-                      fontSize: `${Math.max(8, Math.min(11, bubbleW * 0.095))}px`,
-                      textShadow: '0 1px 0px rgba(255,255,255,0.85), 0 -1px 0px rgba(0,0,0,0.95), 1px 0 0 rgba(255,255,255,0.3), -1px 0 0 rgba(0,0,0,0.8), 0 0 1.5px rgba(255,255,255,0.4)',
-                    }}
-                  >
-                    {bubble.name.toUpperCase().split(' ').map((word, wordIndex) => (
-                      <span key={wordIndex} className="inline-block whitespace-nowrap mr-1">
-                        {word.split('').map((char, charIndex) => {
-                          const globalIdx = wordIndex * 10 + charIndex;
-                          const seed = (bubble.id.charCodeAt(0) * 19 + globalIdx * 37) % 100;
-                          const yOffset = ((seed % 3) - 1) * 0.25;
-                          const rotation = ((seed * 7) % 5) - 2;
-                          const scaleVar = 0.94 + ((seed * 11) % 12) / 100;
-                          return (
-                            <span
-                              key={charIndex}
-                              className="inline-block transition-none"
-                              style={{
-                                transform: `translateY(${yOffset}px) rotate(${rotation}deg) scale(${scaleVar})`,
-                                display: 'inline-block',
-                              }}
-                            >
-                              {char}
-                            </span>
-                          );
-                        })}
-                      </span>
-                    ))}
-                  </span>
-                </div>
-
-                {/* Multi-selection Check Indicator */}
-                {isSelected && currentSelectedIds.length > 1 && (
-                  <div className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-indigo-500 text-white flex items-center justify-center text-[10px] font-bold shadow-md ring-1 ring-white z-30">
-                    ✓
-                  </div>
-                )}
-
-                {/* Automatic Assessment Guidance "!" Error Icon */}
-                {freqGuidance && (
-                  <div
-                    title={`${freqGuidance.title}: ${freqGuidance.message}\nRecommendation: ${freqGuidance.recommendation}`}
-                    className={`absolute -top-1.5 ${
-                      isSelected && currentSelectedIds.length > 1 ? 'left-3.5' : '-left-1.5'
-                    } w-4 h-4 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg ring-1.5 ring-white text-[10px] font-black z-30 animate-pulse cursor-help pointer-events-auto`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectBubble(bubble.id, false);
-                    }}
-                  >
+                  <title>{`${guidance.title}: ${guidance.message}\nRecommendation: ${guidance.recommendation}`}</title>
+                  <circle r={7.5} fill="#e11d48" stroke="#fff" strokeWidth={1.2} />
+                  <text y={3.6} textAnchor="middle" fontSize={10} fontWeight={900} fill="#fff">
                     !
-                  </div>
-                )}
-
-                {/* Track Notes Badge */}
-                {bubble.notes && bubble.notes.trim().length > 0 && (
-                  <div
-                    title={`Track Notes: ${bubble.notes}`}
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center shadow-md ring-1 ring-white text-[9px] font-bold z-20 pointer-events-auto"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectBubble(bubble.id, false);
-                    }}
-                  >
-                    <FileText className="w-2.5 h-2.5" />
-                  </div>
-                )}
-
-                {/* Solo / Mute Pin on Sphere for Quick Toggling */}
-                {(onToggleSolo || onToggleMute) && (
-                  <div className="absolute -bottom-2 flex items-center gap-1 z-20 opacity-80 group-hover:opacity-100 transition-opacity">
-                    {onToggleSolo && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleSolo(bubble.id);
-                        }}
-                        title={bubble.solo ? 'Unsolo track' : 'Solo track'}
-                        className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center transition-colors shadow-sm ${
-                          bubble.solo
-                            ? 'bg-amber-400 text-slate-950 ring-1 ring-amber-200'
-                            : 'bg-slate-900/90 text-slate-300 hover:bg-amber-500/80 hover:text-black'
-                        }`}
-                      >
-                        S
-                      </button>
-                    )}
-                    {onToggleMute && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleMute(bubble.id);
-                        }}
-                        title={bubble.mute ? 'Unmute track' : 'Mute track'}
-                        className={`w-4 h-4 rounded text-[9px] font-bold flex items-center justify-center transition-colors shadow-sm ${
-                          bubble.mute
-                            ? 'bg-red-500 text-white ring-1 ring-red-300'
-                            : 'bg-slate-900/90 text-slate-300 hover:bg-red-500/80 hover:text-white'
-                        }`}
-                      >
-                        M
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Bounding Node Resize Handles (Only shown in Front View for single selection) */}
-              {isSelected && currentSelectedIds.length <= 1 && viewMode === 'front' && !readOnly && (
-                <>
-                  {/* Left Handle (Width Stretch up to 300px) */}
-                  <div
-                    onPointerDown={(e) => handleResizePointerDown(e, bubble, 'left')}
-                    title="Stretch Stereo Spread (Left)"
-                    className="absolute top-1/2 -left-3 -translate-y-1/2 w-2.5 h-6 bg-white hover:bg-indigo-300 rounded-sm shadow-md cursor-ew-resize border border-slate-700 z-30"
-                  />
-                  {/* Right Handle (Width Stretch up to 300px) */}
-                  <div
-                    onPointerDown={(e) => handleResizePointerDown(e, bubble, 'right')}
-                    title="Stretch Stereo Spread (Right)"
-                    className="absolute top-1/2 -right-3 -translate-y-1/2 w-2.5 h-6 bg-white hover:bg-indigo-300 rounded-sm shadow-md cursor-ew-resize border border-slate-700 z-30"
-                  />
-                  {/* Top Handle (Height Stretch up to 300px) */}
-                  <div
-                    onPointerDown={(e) => handleResizePointerDown(e, bubble, 'top')}
-                    title="Stretch Frequency Bandwidth (Upward)"
-                    className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-2.5 bg-white hover:bg-indigo-300 rounded-sm shadow-md cursor-ns-resize border border-slate-700 z-30"
-                  />
-                  {/* Bottom Handle (Height Stretch up to 300px) */}
-                  <div
-                    onPointerDown={(e) => handleResizePointerDown(e, bubble, 'bottom')}
-                    title="Stretch Frequency Bandwidth (Downward)"
-                    className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-2.5 bg-white hover:bg-indigo-300 rounded-sm shadow-md cursor-ns-resize border border-slate-700 z-30"
-                  />
-                </>
+                  </text>
+                </g>
               )}
-            </div>
+              {b.notes && b.notes.trim() && (
+                <g
+                  transform={`translate(${(d.cx + d.bw * 0.72).toFixed(1)} ${(d.cy - d.bh * 0.72).toFixed(1)})`}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    onSelectBubble(b.id, false);
+                  }}
+                >
+                  <title>{`Track notes: ${b.notes}`}</title>
+                  <circle r={6.5} fill="#fbbf24" stroke="#fff" strokeWidth={1} />
+                  <rect x={-2.6} y={-3.2} width={5.2} height={6.4} rx={0.8} fill="none" stroke="#0f172a" strokeWidth={1.1} />
+                </g>
+              )}
+              {showSM && (
+                <g transform={`translate(${d.cx.toFixed(1)} ${smY.toFixed(1)})`}>
+                  {onToggleSolo && (
+                    <g
+                      transform="translate(-19 0)"
+                      style={{ cursor: 'pointer' }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onPointerEnter={() => setHoverId(b.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleSolo(b.id);
+                      }}
+                    >
+                      <title>{b.solo ? 'Unsolo track' : 'Solo track'}</title>
+                      <rect width={16} height={15} rx={3} fill={b.solo ? '#fbbf24' : 'rgba(15,23,42,0.9)'} stroke="rgba(255,255,255,0.25)" />
+                      <text x={8} y={11} textAnchor="middle" fontSize={9.5} fontWeight={800} fill={b.solo ? '#0f172a' : '#cbd5e1'}>
+                        S
+                      </text>
+                    </g>
+                  )}
+                  {onToggleMute && (
+                    <g
+                      transform="translate(3 0)"
+                      style={{ cursor: 'pointer' }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onPointerEnter={() => setHoverId(b.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleMute(b.id);
+                      }}
+                    >
+                      <title>{b.mute ? 'Unmute track' : 'Mute track'}</title>
+                      <rect width={16} height={15} rx={3} fill={b.mute ? '#ef4444' : 'rgba(15,23,42,0.9)'} stroke="rgba(255,255,255,0.25)" />
+                      <text x={8} y={11} textAnchor="middle" fontSize={9.5} fontWeight={800} fill={b.mute ? '#fff' : '#cbd5e1'}>
+                        M
+                      </text>
+                    </g>
+                  )}
+                </g>
+              )}
+            </g>
           );
         })}
 
-        {/* Marquee Selection Rectangle Overlay */}
-        {marqueeState &&
-          Math.hypot(marqueeState.currentX - marqueeState.startX, marqueeState.currentY - marqueeState.startY) > 5 &&
-          containerRef.current && (() => {
-            const rect = containerRef.current.getBoundingClientRect();
-            const left = Math.min(marqueeState.startX, marqueeState.currentX) - rect.left;
-            const top = Math.min(marqueeState.startY, marqueeState.currentY) - rect.top;
-            const width = Math.abs(marqueeState.currentX - marqueeState.startX);
-            const height = Math.abs(marqueeState.currentY - marqueeState.startY);
-
+        {/* Resize handles: stereo width (left/right) and frequency span (top/bottom) */}
+        {singleSelected &&
+          (['left', 'right', 'top', 'bottom'] as const).map((h) => {
+            const d = singleSelected;
+            const [a, bb] = d.axes;
+            const off: Vec3 = h === 'right' ? [a, 0, 0] : h === 'left' ? [-a, 0, 0] : h === 'top' ? [0, bb, 0] : [0, -bb, 0];
+            const q = cam.project([d.C[0] + off[0], d.C[1] + off[1], d.C[2] + off[2]]);
+            const horiz = h === 'left' || h === 'right';
+            const w = horiz ? 8 : 20;
+            const ht = horiz ? 20 : 8;
+            const nx = h === 'right' ? 7 : h === 'left' ? -7 : 0;
+            const ny = h === 'top' ? -7 : h === 'bottom' ? 7 : 0;
             return (
-              <div
-                className="absolute pointer-events-none z-50 border border-indigo-400 bg-indigo-500/15 rounded-sm"
-                style={{
-                  left: `${left}px`,
-                  top: `${top}px`,
-                  width: `${width}px`,
-                  height: `${height}px`,
-                  boxShadow: '0 0 12px rgba(99, 102, 241, 0.35)',
-                }}
+              <rect
+                key={h}
+                data-no-marquee="true"
+                x={q.x + nx - w / 2}
+                y={q.y + ny - ht / 2}
+                width={w}
+                height={ht}
+                rx={2.5}
+                fill="#ffffff"
+                stroke="#334155"
+                style={{ cursor: horiz ? 'ew-resize' : 'ns-resize' }}
+                onPointerDown={(e) => handleResizePointerDown(e, d, h)}
               >
-                <div className="absolute top-1 left-1.5 px-1.5 py-0.5 bg-indigo-600 text-white text-[10px] font-mono rounded shadow">
-                  {currentSelectedIds.length} selected
-                </div>
-              </div>
+                <title>{horiz ? 'Stretch stereo width' : 'Stretch frequency span'}</title>
+              </rect>
             );
-          })()}
-        </div>
+          })}
+      </svg>
+
+      {/* View name */}
+      <div className="absolute top-3 left-3 pointer-events-none">
+        <div className={`px-2.5 py-1 rounded-lg border backdrop-blur text-xs font-semibold ${T.chip}`}>{VIEW_HINT[viewMode]}</div>
       </div>
+
+      {marqueeBox && (
+        <div
+          className="absolute pointer-events-none z-50 border border-indigo-400 bg-indigo-500/15 rounded-sm"
+          style={{ ...marqueeBox, boxShadow: '0 0 12px rgba(99,102,241,0.35)' }}
+        >
+          <div className="absolute top-1 left-1.5 px-1.5 py-0.5 bg-indigo-600 text-white text-[10px] font-mono rounded shadow">
+            {currentSelectedIds.length} selected
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
+/**
+ * Only redraw the stage when something it shows has changed. While audio plays, the clock
+ * ticks ~20 times a second; the stage only needs to redraw when a sound enters or leaves its
+ * timeline region. Callback props are ignored in the comparison: the ones passed in are either
+ * stable or read the latest data themselves.
+ */
+const activeSignature = (bubbles: SoundBubble[], t: number) => bubbles.map((b) => (isActiveAt(b, t) ? '1' : '0')).join('');
+
+export const Stage3D = React.memo(Stage3DInner, (prev, next) => {
+  for (const key of Object.keys({ ...prev, ...next }) as (keyof Stage3DProps)[]) {
+    if (key === 'currentTime') continue;
+    if (typeof prev[key] === 'function' && typeof next[key] === 'function') continue;
+    if (prev[key] !== next[key]) return false;
+  }
+  return activeSignature(prev.bubbles, prev.currentTime) === activeSignature(next.bubbles, next.currentTime);
+});
