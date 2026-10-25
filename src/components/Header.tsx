@@ -7,7 +7,6 @@ import {
   Moon,
   GraduationCap,
   Layers,
-  Volume2,
   Eye,
   Sliders,
   Box,
@@ -57,9 +56,8 @@ const HeaderInner: React.FC<HeaderProps> = ({
     >
       {/* Brand & Title */}
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-sky-500 flex items-center justify-center font-extrabold text-white shadow-md shadow-indigo-500/30 ring-1 ring-white/20">
-          <Volume2 className="w-4 h-4" />
-        </div>
+        {/* App icon: a loud sound up front overlapping a quieter one further back (public/favicon.svg) */}
+        <img src="/favicon.svg" alt="" width={32} height={32} className="w-8 h-8 rounded-lg shadow-md shadow-sky-500/20" />
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
             <span className={`font-bold text-sm sm:text-base tracking-tight flex items-center gap-1.5 whitespace-nowrap ${
