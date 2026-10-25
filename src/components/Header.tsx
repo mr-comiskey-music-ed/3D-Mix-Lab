@@ -63,10 +63,7 @@ const HeaderInner: React.FC<HeaderProps> = ({
             <span className={`font-bold text-sm sm:text-base tracking-tight flex items-center gap-1.5 whitespace-nowrap ${
               theme === 'light' ? 'text-slate-900' : 'text-white'
             }`}>
-              Visual Mix Lab
-            </span>
-            <span className="hidden 2xl:inline text-[10px] px-1.5 py-0.5 rounded-full font-mono font-medium tracking-wide uppercase bg-indigo-500/20 text-indigo-500 border border-indigo-500/30">
-              3D Audio
+              3D Mix Lab
             </span>
           </div>
         </div>

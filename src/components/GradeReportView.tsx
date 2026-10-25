@@ -137,7 +137,7 @@ export const GradeReportView: React.FC<GradeReportViewProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `visual_mix_lab_grades_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `3d_mix_lab_grades_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

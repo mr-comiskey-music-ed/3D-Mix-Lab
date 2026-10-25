@@ -229,7 +229,7 @@ export const ExamplesView: React.FC<ExamplesViewProps> = ({
       title: 'Custom Production Diagram',
       genre: 'Alternative / Custom',
       bpm: 120,
-      description: 'Custom reference diagram created in Visual Mix Studio.',
+      description: 'Custom reference diagram created in 3D Mix Lab.',
       bubbles: [
         {
           id: `ex-${Date.now()}-kick`,

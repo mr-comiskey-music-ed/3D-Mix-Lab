@@ -282,7 +282,7 @@ export const QuickTourModal: React.FC<QuickTourModalProps> = ({
           <div className="flex items-center gap-2 text-indigo-400">
             <GraduationCap className="w-4 h-4" />
             <h3 className="font-bold text-xs text-white uppercase tracking-wider">
-              Visual Mix Lab · Guided Tour
+              3D Mix Lab · Guided Tour
             </h3>
           </div>
           <button
